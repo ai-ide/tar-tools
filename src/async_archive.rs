@@ -1,11 +1,12 @@
 use std::io;
+use std::marker::PhantomData;
+use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncSeek, AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncSeek};
+use async_trait::async_trait;
 
 use crate::header::Header;
-use crate::pax::PaxExtensions;
 
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
 use crate::async_utils::{try_read_all_async, seek_relative, AsyncMutexReader};
@@ -127,13 +128,14 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R
 }
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R> {
-    fn poll_seek(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        pos: tokio::io::SeekFrom,
-    ) -> std::task::Poll<io::Result<u64>> {
+    fn start_seek(self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
         let mut guard = self.inner.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        Pin::new(&mut *guard).poll_seek(cx, pos)
+        Pin::new(&mut *guard).start_seek(pos)
+    }
+
+    fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        let mut guard = self.inner.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        Pin::new(&mut *guard).poll_complete(cx)
     }
 }
 

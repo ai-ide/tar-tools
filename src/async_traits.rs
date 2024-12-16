@@ -2,10 +2,10 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncSeek, AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncSeek};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::header::Header;
@@ -112,32 +112,33 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R>
 
         if let Poll::Ready(Ok(())) = result {
             let this = self.get_mut();
-            this.pos += initial_remaining - buf.remaining();
+            this.pos += (initial_remaining - buf.remaining()) as u64;
         }
         result
     }
 }
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncSeek for AsyncEntry<R> {
-    fn poll_seek(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        pos: tokio::io::SeekFrom,
-    ) -> Poll<io::Result<u64>> {
+    fn start_seek(mut self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
+        let this = self.get_mut();
         match pos {
             tokio::io::SeekFrom::Start(n) => {
-                self.pos = n;
-                Poll::Ready(Ok(n))
+                this.pos = n;
+                Ok(())
             }
             tokio::io::SeekFrom::Current(n) => {
-                self.pos = self.pos.saturating_add_signed(n);
-                Poll::Ready(Ok(self.pos))
+                this.pos = this.pos.saturating_add_signed(n);
+                Ok(())
             }
             tokio::io::SeekFrom::End(n) => {
-                self.pos = self.size.saturating_add_signed(n);
-                Poll::Ready(Ok(self.pos))
+                this.pos = this.size.saturating_add_signed(n);
+                Ok(())
             }
         }
+    }
+
+    fn poll_complete(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        Poll::Ready(Ok(self.get_mut().pos))
     }
 }
 

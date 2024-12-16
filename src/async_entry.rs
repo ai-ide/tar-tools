@@ -39,7 +39,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> tokio::io::AsyncRead for As
         };
 
         if let Poll::Ready(Ok(())) = result {
-            this.fields.pos += initial_remaining - buf.remaining();
+            this.fields.pos += (initial_remaining - buf.remaining()) as u64;
         }
         result
     }
