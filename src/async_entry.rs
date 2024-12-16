@@ -8,6 +8,7 @@ use futures::{AsyncReadExt, AsyncSeekExt};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 use crate::async_traits::{AsyncEntryFields, AsyncEntryTrait};
 use crate::header::Header;
@@ -15,11 +16,11 @@ use crate::header::Header;
 const BLOCK_SIZE: u64 = 512;
 
 /// An entry within a tar archive.
-pub struct AsyncEntryReader<'a, R: AsyncRead + AsyncSeek + Unpin + Send> {
-    fields: AsyncEntryFields<'a, R>,
+pub struct AsyncEntryReader<R: AsyncRead + AsyncSeek + Unpin + Send> {
+    fields: AsyncEntryFields<R>,
 }
 
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryReader<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryReader<R> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -41,15 +42,15 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryReader
     }
 }
 
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<R> {
     /// Creates a new AsyncEntryReader.
     pub(crate) fn new(
         header: Header,
         size: u64,
         header_pos: u64,
         file_pos: u64,
-        archive: &'a mut R,
-    ) -> AsyncEntryReader<'a, R> {
+        archive: Arc<R>,
+    ) -> AsyncEntryReader<R> {
         AsyncEntryReader {
             fields: AsyncEntryFields {
                 header,
@@ -61,6 +62,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
                 pax_extensions: None,
                 long_pathname: None,
                 long_linkname: None,
+                _marker: PhantomData,
             },
         }
     }
@@ -102,7 +104,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
 }
 
 #[async_trait]
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntryReader<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntryReader<R> {
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.fields.pos >= self.fields.size {
             return Ok(0);
@@ -174,7 +176,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
     }
 }
 
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> tokio::io::AsyncRead for AsyncEntryReader<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> tokio::io::AsyncRead for AsyncEntryReader<R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

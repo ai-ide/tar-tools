@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::header::Header;
+use std::sync::Arc;
 
 /// Fields for managing entries iteration state
 pub(crate) struct AsyncEntriesFields<R> {
@@ -18,25 +19,26 @@ pub(crate) struct AsyncEntriesFields<R> {
 }
 
 /// Fields for managing entry reading state
-pub struct AsyncEntryFields<'a, R: 'a> {
+pub struct AsyncEntryFields<R> {
     pub(crate) header: Header,
     pub(crate) size: u64,
     pub(crate) pos: u64,
     pub(crate) header_pos: u64,
     pub(crate) file_pos: u64,
-    pub(crate) obj: &'a mut R,
+    pub(crate) obj: Arc<R>,
     pub(crate) pax_extensions: Option<Vec<u8>>,
     pub(crate) long_pathname: Option<Vec<u8>>,
     pub(crate) long_linkname: Option<Vec<u8>>,
+    pub(crate) _marker: PhantomData<R>,
 }
 
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryFields<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryFields<R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut *self.obj).poll_read(cx, buf)
+        Pin::new(&mut &*self.obj).poll_read(cx, buf)
     }
 }
 
@@ -47,17 +49,17 @@ pub struct AsyncEntries<R> {
 }
 
 /// An entry within a tar archive
-pub struct AsyncEntry<'a, R: 'a> {
+pub struct AsyncEntry<R> {
     pub(crate) header: Header,
     pub(crate) size: u64,
     pub(crate) pos: u64,
     pub(crate) header_pos: u64,
     pub(crate) file_pos: u64,
-    pub(crate) obj: &'a mut R,
+    pub(crate) obj: Arc<R>,
     pub(crate) pax_extensions: Option<Vec<u8>>,
     pub(crate) long_pathname: Option<Vec<u8>>,
     pub(crate) long_linkname: Option<Vec<u8>>,
-    pub(crate) _marker: PhantomData<&'a ()>,
+    pub(crate) _marker: PhantomData<R>,
 }
 
 /// Async interface for reading tar archives.
@@ -83,7 +85,7 @@ pub trait AsyncEntryTrait {
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()>;
 }
 
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -93,9 +95,8 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<'a, R
             return Poll::Ready(Ok(0));
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let fut = AsyncReadExt::read(&mut self.obj, &mut buf[..amt]);
-        futures::pin_mut!(fut);
-        match fut.poll(cx) {
+        let reader = &*self.obj;
+        match Pin::new(reader).poll_read(cx, &mut buf[..amt]) {
             Poll::Ready(Ok(n)) => {
                 self.pos += n as u64;
                 Poll::Ready(Ok(n))
@@ -105,7 +106,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<'a, R
     }
 }
 
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncEntry<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncEntry<R> {
     fn poll_seek(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -129,13 +130,13 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncEntry<'a, R
 }
 
 #[async_trait]
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry<R> {
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.pos >= self.size {
             return Ok(0);
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let n = self.obj.read(&mut buf[..amt]).await?;
+        let n = (&*self.obj).read(&mut buf[..amt]).await?;
         self.pos += n as u64;
         Ok(n)
     }
