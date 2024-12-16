@@ -2,7 +2,7 @@
 
 [Documentation](https://docs.rs/tar)
 
-A tar archive reading/writing library for Rust.
+A tar archive reading/writing library for Rust, providing functionality to create and extract tar archives.
 
 ```toml
 # Cargo.toml
