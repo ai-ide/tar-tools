@@ -8,7 +8,7 @@ use crate::header::Header;
 use crate::pax::PaxExtensions;
 
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
-use crate::async_utils::{try_read_all_async, seek_relative};
+use crate::async_utils::{try_read_all_async, seek_relative, AsyncMutexReader};
 
 const BLOCK_SIZE: u64 = 512;
 
@@ -117,7 +117,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchive for AsyncArch
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R> {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
@@ -128,7 +128,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R> {
     fn poll_seek(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         pos: tokio::io::SeekFrom,
     ) -> std::task::Poll<io::Result<u64>> {
@@ -139,7 +139,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveReader<R>> {
     /// Advances the iterator, returning the next entry.
-    pub async fn next(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
+    pub async fn next(&mut self) -> io::Result<Option<AsyncEntry<R>>> {
         if self.fields.done {
             return Ok(None);
         }
@@ -161,19 +161,21 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
         }
     }
 
-    async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
+    async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<R>>> {
         let header_pos = self.fields.offset;
         let mut header = [0; 512];
 
         // Skip to where we want to read
         let delta = header_pos as i64 - self.fields.offset as i64;
         if delta != 0 {
-            seek_relative(&mut self.fields.obj.inner.obj, delta).await?;
+            let mut reader = AsyncMutexReader::new(self.fields.obj.inner.obj.clone());
+            seek_relative(&mut reader, delta).await?;
             self.fields.offset = header_pos;
         }
 
         // Read the header
-        if !try_read_all_async(&mut self.fields.obj.inner.obj, &mut header).await? {
+        let mut reader = AsyncMutexReader::new(self.fields.obj.inner.obj.clone());
+        if !try_read_all_async(&mut reader, &mut header).await? {
             self.fields.done = true;
             return Ok(None);
         }
@@ -201,7 +203,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
             pos: 0,
             header_pos,
             file_pos,
-            obj: Arc::new(self.fields.obj.inner.obj.clone()),
+            obj: self.fields.obj.inner.obj.clone(),
             pax_extensions: None,
             long_pathname: None,
             long_linkname: None,
@@ -215,7 +217,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
         Ok(Some(entry))
     }
 
-    async fn next_entry(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
+    async fn next_entry(&mut self) -> io::Result<Option<AsyncEntry<R>>> {
         let mut entry_result = self.next_entry_raw().await?;
 
         while let Some(entry) = entry_result {
@@ -237,6 +239,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
     async fn skip(&mut self) -> io::Result<()> {
         // Skip to the next block boundary
         let size = (self.fields.offset + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
-        seek_relative(&mut self.fields.obj.inner.obj, size as i64).await
+        let mut reader = AsyncMutexReader::new(self.fields.obj.inner.obj.clone());
+        seek_relative(&mut reader, size as i64).await
     }
 }

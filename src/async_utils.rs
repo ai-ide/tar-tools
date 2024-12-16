@@ -1,5 +1,45 @@
 use std::io;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncSeek, AsyncReadExt, AsyncSeekExt};
+
+/// A wrapper type that implements AsyncRead and AsyncSeek for Arc<Mutex<R>>
+pub(crate) struct AsyncMutexReader<R> {
+    inner: Arc<Mutex<R>>,
+}
+
+impl<R> AsyncMutexReader<R> {
+    pub(crate) fn new(inner: Arc<Mutex<R>>) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for AsyncMutexReader<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let mut guard = this.inner.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        Pin::new(&mut *guard).poll_read(cx, buf)
+    }
+}
+
+impl<R: AsyncSeek + Unpin> AsyncSeek for AsyncMutexReader<R> {
+    fn start_seek(self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
+        let this = self.get_mut();
+        let mut guard = this.inner.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        Pin::new(&mut *guard).start_seek(pos)
+    }
+
+    fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        let this = self.get_mut();
+        let mut guard = this.inner.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        Pin::new(&mut *guard).poll_complete(cx)
+    }
+}
 
 /// Attempts to read exactly buf.len() bytes into buf.
 ///

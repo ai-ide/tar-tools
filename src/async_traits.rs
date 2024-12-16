@@ -33,12 +33,20 @@ pub struct AsyncEntryFields<R> {
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFields<R> {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        Pin::new(&mut *guard).poll_read(cx, buf)
+        let result = {
+            let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+            Pin::new(&mut *guard).poll_read(cx, buf)
+        };
+
+        if let Poll::Ready(Ok(())) = result {
+            let this = self.get_mut();
+            this.pos += buf.filled().len() as u64;
+        }
+        result
     }
 }
 
@@ -87,7 +95,7 @@ pub trait AsyncEntryTrait {
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R> {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
@@ -96,21 +104,23 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R>
         }
         let amt = std::cmp::min(buf.remaining() as u64, self.size - self.pos) as usize;
         let initial_remaining = buf.remaining();
-        let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        match Pin::new(&mut *guard).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) => {
-                let n = initial_remaining - buf.remaining();
-                self.pos += n as u64;
-                Poll::Ready(Ok(()))
-            }
-            other => other,
+
+        let result = {
+            let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+            Pin::new(&mut *guard).poll_read(cx, buf)
+        };
+
+        if let Poll::Ready(Ok(())) = result {
+            let this = self.get_mut();
+            this.pos += initial_remaining - buf.remaining();
         }
+        result
     }
 }
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncSeek for AsyncEntry<R> {
     fn poll_seek(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
         pos: tokio::io::SeekFrom,
     ) -> Poll<io::Result<u64>> {

@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::async_traits::{AsyncEntryFields, AsyncEntryTrait};
 use crate::header::Header;
+use crate::async_utils::AsyncMutexReader;
 
 const BLOCK_SIZE: u64 = 512;
 
@@ -19,9 +20,9 @@ pub struct AsyncEntryReader<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> {
     fields: AsyncEntryFields<R>,
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryReader<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> tokio::io::AsyncRead for AsyncEntryReader<R> {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
@@ -32,15 +33,39 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryRea
         }
 
         let initial_remaining = buf.remaining();
-        let mut guard = this.fields.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        match Pin::new(&mut *guard).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) => {
-                let n = initial_remaining - buf.remaining();
-                this.fields.pos += n as u64;
-                Poll::Ready(Ok(()))
-            }
-            other => other,
+        let result = {
+            let mut guard = this.fields.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+            Pin::new(&mut *guard).poll_read(cx, buf)
+        };
+
+        if let Poll::Ready(Ok(())) = result {
+            this.fields.pos += initial_remaining - buf.remaining();
         }
+        result
+    }
+}
+
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> tokio::io::AsyncSeek for AsyncEntryReader<R> {
+    fn start_seek(mut self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
+        let this = self.get_mut();
+        match pos {
+            tokio::io::SeekFrom::Start(n) => {
+                this.fields.pos = n;
+                Ok(())
+            }
+            tokio::io::SeekFrom::Current(n) => {
+                this.fields.pos = this.fields.pos.saturating_add_signed(n);
+                Ok(())
+            }
+            tokio::io::SeekFrom::End(n) => {
+                this.fields.pos = this.fields.size.saturating_add_signed(n);
+                Ok(())
+            }
+        }
+    }
+
+    fn poll_complete(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        Poll::Ready(Ok(self.get_mut().fields.pos))
     }
 }
 
@@ -112,20 +137,14 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEn
             return Ok(0);
         }
 
-        // Seek to the correct position if necessary
+        // Perform seek and read operations with AsyncMutexReader
         let archive_pos = self.fields.file_pos + self.fields.pos;
-        let mut guard = self.fields.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        guard.seek(tokio::io::SeekFrom::Start(archive_pos)).await?;
+        let mut reader = AsyncMutexReader::new(self.fields.obj.clone());
+        reader.seek(tokio::io::SeekFrom::Start(archive_pos)).await?;
 
-        // Read the data
         let amt = std::cmp::min(buf.len() as u64, self.fields.size - self.fields.pos) as usize;
         let mut read_buf = tokio::io::ReadBuf::new(&mut buf[..amt]);
-
-        // Scope the MutexGuard to ensure it's dropped before the await
-        {
-            let mut guard = self.fields.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-            Pin::new(&mut *guard).poll_read(&mut Context::from_waker(futures::task::noop_waker_ref()), &mut read_buf)?;
-        }
+        Pin::new(&mut reader).poll_read(&mut Context::from_waker(futures::task::noop_waker_ref()), &mut read_buf)?;
 
         let n = read_buf.filled().len();
         self.fields.pos += n as u64;
@@ -184,24 +203,5 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEn
         }
 
         Ok(())
-    }
-}
-
-impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> tokio::io::AsyncRead for AsyncEntryReader<R> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let mut temp_buf = vec![0u8; buf.remaining()];
-        let mut guard = self.fields.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        match Pin::new(&mut *guard).poll_read(cx, &mut temp_buf) {
-            Poll::Ready(Ok(n)) => {
-                buf.put_slice(&temp_buf[..n]);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
     }
 }
