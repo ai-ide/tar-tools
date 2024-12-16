@@ -2,12 +2,12 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
 use futures::io::{AsyncRead, AsyncSeek};
-use futures::AsyncReadExt;
 use async_trait::async_trait;
 
-use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
+use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry, AsyncEntryTrait};
 use crate::async_utils::{try_read_all_async, seek_relative};
 use crate::header::Header;
+use crate::entry_type::EntryType;
 
 const BLOCK_SIZE: u64 = 512;
 
@@ -167,7 +167,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         self.fields.offset += BLOCK_SIZE;
 
         // Validate the header
-        let mut sum = Header::new_old();
+        let sum = Header::new_old();
         sum.as_bytes().copy_from_slice(&header);
         if !sum.as_bytes().iter().all(|i| *i == 0) {
             // Try to figure out if we're at the end of the archive or not
@@ -210,7 +210,8 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
                     let header = entry.header;
                     let is_recognized_header = header.as_gnu().is_some() ||
                         header.as_ustar().is_some() ||
-                        header.as_old().is_some();
+                        header.as_old().is_ustar() ||
+                        header.as_old().is_gnu();
 
                     if is_recognized_header {
                         return Ok(Some(entry));

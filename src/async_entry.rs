@@ -80,17 +80,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
 
     /// Reads all bytes in this entry.
     pub async fn read_all(&mut self) -> io::Result<Vec<u8>> {
-        let mut data = Vec::with_capacity(self.fields.size as usize);
-        let mut buf = [0u8; 4096];
-
-        while let Ok(n) = self.read(&mut buf).await {
-            if n == 0 {
-                break;
-            }
-            data.extend_from_slice(&buf[..n]);
-        }
-
-        Ok(data)
+        AsyncEntryTrait::read_all(&mut self.fields).await
     }
 }
 
@@ -124,7 +114,8 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
         match self.fields.header.entry_type() {
             crate::entry_type::EntryType::Regular => {
                 let mut file = fs::File::create(&path).await?;
-                tokio::io::copy(&mut *self, &mut file).await?;
+                let mut buf = vec![0; 8192];
+                tokio::io::copy_buf(&mut futures::io::BufReader::new(self), &mut file).await?;
             }
             crate::entry_type::EntryType::Directory => {
                 fs::create_dir_all(&path).await?;

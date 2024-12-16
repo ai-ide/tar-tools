@@ -3,11 +3,11 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncSeek};
-use futures::AsyncReadExt;
+use futures::{AsyncReadExt, Future};
+use async_trait::async_trait;
 use tokio::fs;
-use tokio::io::AsyncRead as TokioAsyncRead;
+use tokio::io::AsyncWriteExt;
 use crate::header::Header;
 
 /// Fields for managing entries iteration state
@@ -121,7 +121,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
         let mut buf = vec![0; self.size as usize];
         let mut pos = 0;
         while pos < buf.len() {
-            match self.read(&mut buf[pos..]).await? {
+            match AsyncReadExt::read(self, &mut buf[pos..]).await? {
                 0 => break,
                 n => pos += n,
             }
@@ -142,7 +142,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
             crate::entry_type::EntryType::Regular => {
                 let mut file = fs::File::create(&path).await?;
                 let mut buf = vec![0; 8192];
-                while let Ok(n) = self.read(&mut buf).await {
+                while let Ok(n) = AsyncReadExt::read(self, &mut buf).await {
                     if n == 0 { break; }
                     file.write_all(&buf[..n]).await?;
                 }
