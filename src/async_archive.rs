@@ -167,8 +167,8 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         self.fields.offset += BLOCK_SIZE;
 
         // Validate the header
-        let sum = Header::new_old();
-        sum.as_bytes().copy_from_slice(&header);
+        let mut sum = Header::new_old();
+        sum.as_bytes_mut().copy_from_slice(&header);
         if !sum.as_bytes().iter().all(|i| *i == 0) {
             // Try to figure out if we're at the end of the archive or not
             let is_zero = header.iter().all(|i| *i == 0);
@@ -210,8 +210,8 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
                     let header = entry.header;
                     let is_recognized_header = header.as_gnu().is_some() ||
                         header.as_ustar().is_some() ||
-                        header.as_old().is_ustar() ||
-                        header.as_old().is_gnu();
+                        header.as_old().is_some() &&
+                        header.as_old().unwrap().is_ustar();
 
                     if is_recognized_header {
                         return Ok(Some(entry));

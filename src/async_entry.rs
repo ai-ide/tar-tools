@@ -77,11 +77,6 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
     pub(crate) fn set_long_linkname(&mut self, linkname: Vec<u8>) {
         self.fields.long_linkname = Some(linkname);
     }
-
-    /// Reads all bytes in this entry.
-    pub async fn read_all(&mut self) -> io::Result<Vec<u8>> {
-        AsyncEntryTrait::read_all(&mut self.fields).await
-    }
 }
 
 #[async_trait]
@@ -102,6 +97,16 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
         Ok(n)
     }
 
+    async fn read_all(&mut self) -> io::Result<Vec<u8>> {
+        let mut data = Vec::with_capacity(self.fields.size as usize);
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = AsyncReadExt::read(self, &mut buf).await {
+            if n == 0 { break; }
+            data.extend_from_slice(&buf[..n]);
+        }
+        Ok(data)
+    }
+
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()> {
         let dst = dst.as_ref();
         let path = dst.join(self.path()?);
@@ -115,7 +120,10 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
             crate::entry_type::EntryType::Regular => {
                 let mut file = fs::File::create(&path).await?;
                 let mut buf = vec![0; 8192];
-                tokio::io::copy_buf(&mut futures::io::BufReader::new(self), &mut file).await?;
+                while let Ok(n) = AsyncReadExt::read(self, &mut buf).await {
+                    if n == 0 { break; }
+                    file.write_all(&buf[..n]).await?;
+                }
             }
             crate::entry_type::EntryType::Directory => {
                 fs::create_dir_all(&path).await?;
