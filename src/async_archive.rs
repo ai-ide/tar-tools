@@ -4,7 +4,7 @@ use std::path::Path;
 use futures::io::{AsyncRead, AsyncSeek};
 use async_trait::async_trait;
 
-use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
+use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry, AsyncEntryTrait};
 use crate::async_utils::{try_read_all_async, seek_relative};
 use crate::header::Header;
 
@@ -89,12 +89,12 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchiveReader<R> {
 
 #[async_trait]
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchive for AsyncArchiveReader<R> {
-    async fn entries(&mut self) -> io::Result<AsyncEntries<R>> {
+    async fn entries(&mut self) -> io::Result<AsyncEntries<AsyncArchiveReader<R>>> {
         Ok(AsyncEntries {
             fields: AsyncEntriesFields {
                 offset: self.inner.pos,
                 done: false,
-                obj: self.inner.obj.clone(),
+                obj: self.clone(),
             },
             _marker: PhantomData,
         })
@@ -133,20 +133,18 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R
     }
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveReader<R>> {
     /// Advances the iterator, returning the next entry.
     pub async fn next(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
         if self.fields.done {
             return Ok(None);
         }
 
-        match self.next_entry_raw().await? {
-            Some(entry) => Ok(Some(entry)),
-            None => {
-                self.fields.done = true;
-                Ok(None)
-            }
+        let entry = self.next_entry_raw().await?;
+        if entry.is_none() {
+            self.fields.done = true;
         }
+        Ok(entry)
     }
 
     async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
@@ -156,12 +154,12 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<R> {
         // Skip to where we want to read
         let delta = header_pos as i64 - self.fields.offset as i64;
         if delta != 0 {
-            seek_relative(&mut self.fields.obj, delta).await?;
+            seek_relative(&mut self.fields.obj.inner.obj, delta).await?;
             self.fields.offset = header_pos;
         }
 
         // Read the header
-        if !try_read_all_async(&mut self.fields.obj, &mut header).await? {
+        if !try_read_all_async(&mut self.fields.obj.inner.obj, &mut header).await? {
             self.fields.done = true;
             return Ok(None);
         }
@@ -189,7 +187,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<R> {
             pos: 0,
             header_pos,
             file_pos,
-            obj: &mut self.fields.obj,
+            obj: &mut self.fields.obj.inner.obj,
             pax_extensions: None,
             long_pathname: None,
             long_linkname: None,
@@ -208,22 +206,23 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<R> {
             let entry = self.next_entry_raw().await?;
             match entry {
                 Some(entry) => {
-                    let is_recognized_header = entry.header.as_gnu().is_some() ||
-                        entry.header.as_ustar().is_some() ||
-                        !entry.header.as_bytes().iter().all(|&x| x == 0);
+                    let is_recognized_header = entry.header.is_ustar() ||
+                        entry.header.is_gnu() ||
+                        entry.header.is_old_gnu();
 
                     if is_recognized_header {
                         return Ok(Some(entry));
                     }
+                    self.skip().await?;
                 }
                 None => return Ok(None),
             }
-            self.skip(0).await?;
         }
     }
 
-    async fn skip(&mut self, amt: u64) -> io::Result<()> {
-        self.fields.offset += amt;
-        Ok(())
+    async fn skip(&mut self) -> io::Result<()> {
+        // Skip to the next block boundary
+        let size = (self.fields.offset + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
+        seek_relative(&mut self.fields.obj.inner.obj, size as i64).await
     }
 }
