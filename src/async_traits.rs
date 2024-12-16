@@ -12,6 +12,7 @@ use crate::header::Header;
 use crate::async_utils::AsyncMutexReader;
 
 /// Fields for managing entries iteration state
+#[derive(Clone)]
 pub(crate) struct AsyncEntriesFields<R> {
     pub(crate) offset: u64,
     pub(crate) done: bool,
@@ -112,8 +113,9 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncRead for Asy
         }
 
         let remaining = buf.remaining() as u64;
-        // Use remaining directly since we already check size bounds
+        let to_read = std::cmp::min(remaining, self.size - self.pos) as usize;
         let mut reader = AsyncMutexReader::new(self.obj.clone());
+        buf.limit(to_read);
 
         match Pin::new(&mut reader).poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
