@@ -4,17 +4,19 @@ use std::path::Path;
 use futures::io::{AsyncRead, AsyncSeek};
 use async_trait::async_trait;
 
-use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry, AsyncEntryTrait};
+use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
 use crate::async_utils::{try_read_all_async, seek_relative};
 use crate::header::Header;
 
 const BLOCK_SIZE: u64 = 512;
 
 /// An asynchronous tar archive reader.
+#[derive(Clone)]
 pub struct AsyncArchiveReader<R> {
     inner: ArchiveInner<R>,
 }
 
+#[derive(Clone)]
 struct ArchiveInner<R> {
     obj: R,
     pos: u64,
@@ -26,7 +28,7 @@ struct ArchiveInner<R> {
     ignore_zeros: bool,
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchiveReader<R> {
     /// Creates a new archive with the underlying object as the reader.
     pub fn new(obj: R) -> AsyncArchiveReader<R> {
         AsyncArchiveReader {
@@ -86,13 +88,13 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
 }
 
 #[async_trait]
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReader<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchive for AsyncArchiveReader<R> {
     async fn entries(&mut self) -> io::Result<AsyncEntries<R>> {
         Ok(AsyncEntries {
             fields: AsyncEntriesFields {
                 offset: self.inner.pos,
                 done: false,
-                obj: self.inner.obj,
+                obj: self.inner.obj.clone(),
             },
             _marker: PhantomData,
         })
@@ -203,7 +205,8 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<R> {
 
     async fn next_entry(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
         loop {
-            match self.next_entry_raw().await? {
+            let entry = self.next_entry_raw().await?;
+            match entry {
                 Some(entry) => {
                     let is_recognized_header = entry.header.as_gnu().is_some() ||
                         entry.header.as_ustar().is_some() ||
@@ -215,6 +218,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<R> {
                 }
                 None => return Ok(None),
             }
+            self.skip(0).await?;
         }
     }
 

@@ -62,9 +62,9 @@ pub struct AsyncEntry<'a, R: 'a> {
 
 /// Async interface for reading tar archives.
 #[async_trait]
-pub trait AsyncArchive: AsyncRead + AsyncSeek + Sized {
+pub trait AsyncArchive: AsyncRead + AsyncSeek + Sized + Clone {
     /// Returns an iterator over the entries in this archive.
-    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, Self>>;
+    async fn entries(&mut self) -> io::Result<AsyncEntries<Self>>;
 
     /// Unpacks the entire archive into the specified directory.
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()>;
