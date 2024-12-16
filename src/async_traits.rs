@@ -53,7 +53,7 @@ pub struct AsyncEntry<'a, R: 'a> {
     pub(crate) pos: u64,
     pub(crate) header_pos: u64,
     pub(crate) file_pos: u64,
-    pub(crate) archive: &'a mut R,
+    pub(crate) obj: &'a mut R,
     pub(crate) pax_extensions: Option<Vec<u8>>,
     pub(crate) long_pathname: Option<Vec<u8>>,
     pub(crate) long_linkname: Option<Vec<u8>>,
@@ -93,7 +93,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<'a, R
             return Poll::Ready(Ok(0));
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let fut = AsyncReadExt::read(&mut self.archive, &mut buf[..amt]);
+        let fut = AsyncReadExt::read(&mut self.obj, &mut buf[..amt]);
         futures::pin_mut!(fut);
         match fut.poll(cx) {
             Poll::Ready(Ok(n)) => {
@@ -135,7 +135,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
             return Ok(0);
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let n = self.archive.read(&mut buf[..amt]).await?;
+        let n = self.obj.read(&mut buf[..amt]).await?;
         self.pos += n as u64;
         Ok(n)
     }
