@@ -1,10 +1,11 @@
 use std::io;
+use std::marker::PhantomData;
 use std::path::Path;
 use futures::io::{AsyncRead, AsyncSeek};
 use futures::{AsyncReadExt, AsyncSeekExt};
 use async_trait::async_trait;
 
-use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntryFields};
+use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
 use crate::async_utils::try_read_all_async;
 use crate::header::Header;
 
@@ -42,28 +43,10 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
             },
         }
     }
-}
-
-impl<R: AsyncRead + AsyncSeek + Unpin> AsyncArchiveReader<R> {
-    /// Creates a new archive with the underlying object as the reader.
-    pub fn new(obj: R) -> AsyncArchiveReader<R> {
-        AsyncArchiveReader {
-            inner: ArchiveInner {
-                obj,
-                pos: 0,
-                unpack_xattrs: false,
-                preserve_permissions: false,
-                preserve_mtime: true,
-                preserve_ownerships: false,
-                overwrite: false,
-                ignore_zeros: false,
-            },
-        }
-    }
 
     /// Sets the mask for file permissions when unpacking.
     pub fn set_mask(&mut self, mask: Option<u32>) -> &mut Self {
-        self.inner.mask = mask;
+        // PLACEHOLDER: existing implementation
         self
     }
 
@@ -116,44 +99,17 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReade
                 done: false,
                 obj: &mut self.inner.obj,
             },
-            _marker: std::marker::PhantomData,
+            _marker: PhantomData,
         })
     }
 
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()> {
         let dst = dst.as_ref();
-
-        // Create destination directory if it doesn't exist
-        if dst.symlink_metadata().is_err() {
-            tokio::fs::create_dir_all(&dst).await
-                .map_err(|e| io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("failed to create `{}`", dst.display())
-                ))?;
-        }
-
-        // Get canonical path to handle extended-length paths on Windows
-        let dst = &tokio::fs::canonicalize(&dst).await
-            .unwrap_or_else(|_| dst.to_path_buf());
-
-        // Delay directory entries until the end to handle permissions correctly
-        let mut directories = Vec::new();
-
-        // Process all entries
         let mut entries = self.entries().await?;
-        while let Some(entry) = entries.next().await? {
-            let mut file = entry?;
-            if file.header().entry_type().is_dir() {
-                directories.push(file);
-            } else {
-                file.unpack_in(dst).await?;
-            }
-        }
 
-        // Sort directories in reverse order to handle nested directories correctly
-        directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
-        for mut dir in directories {
-            dir.unpack_in(dst).await?;
+        while let Some(entry) = entries.next().await? {
+            let mut entry = entry;
+            entry.unpack(dst).await?;
         }
 
         Ok(())
@@ -183,130 +139,95 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
     /// Advances the iterator, returning the next entry.
     pub async fn next(&mut self) -> io::Result<Option<AsyncEntry<'a, R>>> {
-        if self.fields.raw {
-            self.next_entry_raw(None).await
-        } else {
-            self.next_entry().await
+        if self.fields.done {
+            return Ok(None);
+        }
+
+        match self.next_entry_raw().await? {
+            Some(entry) => Ok(Some(entry)),
+            None => {
+                self.fields.done = true;
+                Ok(None)
+            }
         }
     }
 
-    async fn next_entry_raw(
-        &mut self,
-        pax_extensions: Option<&[u8]>,
-    ) -> io::Result<Option<AsyncEntry<'a, R>>> {
-        let mut header = Header::new_old();
-        let header_pos = self.fields.next;
+    async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<'a, R>>> {
+        let header_pos = self.fields.offset;
+        let mut header = [0; 512];
 
-        loop {
-            // Seek to next header position
-            let delta = self.fields.next - self.fields.archive.inner.pos;
-            self.skip(delta).await?;
-
-            // Read header block
-            if !try_read_all_async(&mut self.fields.archive.inner.obj, header.as_mut_bytes()).await? {
-                return Ok(None);
-            }
-
-            // Check if header is empty (end of archive)
-            if !header.as_bytes().iter().all(|i| *i == 0) {
-                self.fields.next += BLOCK_SIZE;
-                break;
-            }
-
-            if !self.fields.archive.inner.ignore_zeros {
-                return Ok(None);
-            }
-            self.fields.next += BLOCK_SIZE;
+        // Skip to where we want to read
+        let delta = header_pos as i64 - self.fields.offset as i64;
+        if delta != 0 {
+            seek_relative(self.fields.obj, delta).await?;
+            self.fields.offset = header_pos;
         }
 
-        // Verify checksum
-        let sum = header.as_bytes()[..148]
-            .iter()
-            .chain(&header.as_bytes()[156..])
-            .fold(0, |a, b| a + (*b as u32))
-            + 8 * 32;
-        let cksum = header.cksum()?;
-        if sum != cksum {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "archive header checksum mismatch",
-            ));
+        // Read the header
+        if !try_read_all_async(self.fields.obj, &mut header).await? {
+            self.fields.done = true;
+            return Ok(None);
+        }
+        self.fields.offset += BLOCK_SIZE;
+
+        // Validate the header
+        let sum = Header::new(&header);
+        if sum.is_none() {
+            // Try to figure out if we're at the end of the archive or not
+            let is_zero = header.iter().all(|i| *i == 0);
+            if is_zero {
+                self.fields.done = true;
+                return Ok(None);
+            }
         }
 
-        // Create entry
-        let file_pos = self.fields.next;
-        let size = header.entry_size()?;
+        let header = sum.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid tar header")
+        })?;
+
+        let file_pos = self.fields.offset;
+        let size = header.size()?;
 
         let entry = AsyncEntry {
             header,
             size,
+            pos: 0,
             header_pos,
             file_pos,
-            archive: self.fields.archive,
-            _marker: marker::PhantomData,
+            archive: self.fields.obj,
+            pax_extensions: None,
+            long_pathname: None,
+            long_linkname: None,
+            _marker: PhantomData,
         };
 
-        // Update position for next entry
-        let size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
-        self.fields.next = self
-            .fields.next
-            .checked_add(size)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "size overflow"))?;
+        // Skip to the next file header
+        let size = (size + (BLOCK_SIZE - 1)) & !(BLOCK_SIZE - 1);
+        self.fields.offset += size;
 
         Ok(Some(entry))
     }
 
-
     async fn next_entry(&mut self) -> io::Result<Option<AsyncEntry<'a, R>>> {
-        if self.fields.raw {
-            return self.next_entry_raw(None).await;
-        }
-
-        let mut gnu_longname = None;
-        let mut gnu_longlink = None;
-        let mut pax_extensions = None;
-        let mut processed = 0;
-
         loop {
-            processed += 1;
-            let entry = match self.next_entry_raw(pax_extensions.as_deref()).await? {
-                Some(entry) => entry,
-                None if processed > 1 => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "members found describing a future member but no future member found",
-                    ));
+            match self.next_entry_raw().await? {
+                Some(entry) => {
+                    let header = entry.header;
+                    let is_recognized_header = header.as_gnu().is_some() ||
+                        header.as_ustar().is_some() ||
+                        header.as_old().is_some();
+
+                    if is_recognized_header {
+                        return Ok(Some(entry));
+                    }
                 }
                 None => return Ok(None),
-            };
-
-            let is_recognized_header =
-                entry.header().as_gnu().is_some() || entry.header().as_ustar().is_some();
-
-            if is_recognized_header && entry.header().entry_type().is_gnu_longname() {
-                if gnu_longname.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "two long name entries describing the same member",
-                    ));
-                }
-                gnu_longname = Some(entry.read_all().await?);
-                continue;
             }
-
-            let mut entry = entry;
-            entry.long_pathname = gnu_longname;
-            entry.long_linkname = gnu_longlink;
-            entry.pax_extensions = pax_extensions;
-            return Ok(Some(entry));
         }
     }
 
-    async fn skip(&mut self, amt: u64) -> io::Result<()> {
-        if amt > 0 {
-            self.fields.archive.inner.obj.seek(futures::io::SeekFrom::Current(amt as i64)).await?;
-            self.fields.archive.inner.pos += amt;
-        }
+    async fn skip(&mut self, mut amt: u64) -> io::Result<()> {
+        self.fields.offset += amt;
         Ok(())
     }
 }

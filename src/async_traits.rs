@@ -1,6 +1,6 @@
 use std::io;
+use std::marker::PhantomData;
 use std::path::Path;
-use std::marker;
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncSeek};
 use crate::header::Header;
@@ -15,11 +15,11 @@ pub(crate) struct AsyncEntriesFields<'a, R: 'a> {
 /// An asynchronous iterator over the entries in an archive.
 pub struct AsyncEntries<'a, R: 'a> {
     pub(crate) fields: AsyncEntriesFields<'a, R>,
-    pub(crate) _marker: marker::PhantomData<&'a mut R>,
+    pub(crate) _marker: PhantomData<&'a mut R>,
 }
 
-/// Fields for an entry in a tar archive
-pub(crate) struct AsyncEntryFields<'a, R: 'a> {
+/// An entry within a tar archive
+pub struct AsyncEntry<'a, R: 'a> {
     pub(crate) header: Header,
     pub(crate) size: u64,
     pub(crate) pos: u64,
@@ -29,7 +29,7 @@ pub(crate) struct AsyncEntryFields<'a, R: 'a> {
     pub(crate) pax_extensions: Option<Vec<u8>>,
     pub(crate) long_pathname: Option<Vec<u8>>,
     pub(crate) long_linkname: Option<Vec<u8>>,
-    pub(crate) _marker: marker::PhantomData<&'a ()>,
+    pub(crate) _marker: PhantomData<&'a ()>,
 }
 
 /// Async interface for reading and unpacking tar archives.
@@ -46,7 +46,7 @@ pub trait AsyncArchive {
 
 /// Async interface for reading and unpacking individual archive entries.
 #[async_trait]
-pub trait AsyncEntry {
+pub trait AsyncEntryTrait {
     /// Reads data from this entry into the specified buffer.
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
 

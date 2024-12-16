@@ -7,14 +7,14 @@ use futures::{AsyncReadExt, AsyncSeekExt};
 use tokio::fs;
 use async_trait::async_trait;
 
-use crate::async_traits::{AsyncEntry, AsyncEntryFields};
+use crate::async_traits::{AsyncEntry, AsyncEntryTrait};
 use crate::header::Header;
 
 const BLOCK_SIZE: u64 = 512;
 
 /// An entry within a tar archive.
 pub struct AsyncEntryReader<'a, R: AsyncRead + AsyncSeek + Unpin + Send> {
-    fields: AsyncEntryFields<'a, R>,
+    fields: AsyncEntry<'a, R>,
 }
 
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
@@ -27,7 +27,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
         archive: &'a mut R,
     ) -> AsyncEntryReader<'a, R> {
         AsyncEntryReader {
-            fields: AsyncEntryFields {
+            fields: AsyncEntry {
                 header,
                 size,
                 pos: 0,
@@ -94,7 +94,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
 }
 
 #[async_trait]
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntry for AsyncEntryReader<'a, R> {
+impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntryReader<'a, R> {
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.fields.pos >= self.fields.size {
             return Ok(0);
