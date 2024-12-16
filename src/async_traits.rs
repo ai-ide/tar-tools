@@ -32,13 +32,13 @@ pub struct AsyncEntryFields<R> {
     pub(crate) _marker: PhantomData<R>,
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryFields<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFields<R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut &*self.obj).poll_read(cx, buf)
+        AsyncRead::poll_read(Pin::new(&mut &**self.obj), cx, buf)
     }
 }
 
@@ -85,7 +85,7 @@ pub trait AsyncEntryTrait {
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()>;
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -95,8 +95,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<R> {
             return Poll::Ready(Ok(0));
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let reader = &*self.obj;
-        match Pin::new(reader).poll_read(cx, &mut buf[..amt]) {
+        match AsyncRead::poll_read(Pin::new(&mut &**self.obj), cx, &mut buf[..amt]) {
             Poll::Ready(Ok(n)) => {
                 self.pos += n as u64;
                 Poll::Ready(Ok(n))
@@ -106,7 +105,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<R> {
     }
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncEntry<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncSeek for AsyncEntry<R> {
     fn poll_seek(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -130,7 +129,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncEntry<R> {
 }
 
 #[async_trait]
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEntry<R> {
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.pos >= self.size {
             return Ok(0);

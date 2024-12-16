@@ -8,7 +8,7 @@ use crate::header::Header;
 use crate::pax::PaxExtensions;
 use std::sync::Arc;
 
-use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry, AsyncEntryTrait};
+use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
 use crate::async_utils::{try_read_all_async, seek_relative};
 
 const BLOCK_SIZE: u64 = 512;
