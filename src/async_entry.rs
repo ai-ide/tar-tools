@@ -6,6 +6,7 @@ use std::fs::Permissions;
 use futures::io::{AsyncRead, AsyncSeek};
 use futures::{AsyncReadExt, AsyncSeekExt};
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use async_trait::async_trait;
 
 use crate::async_traits::{AsyncEntry, AsyncEntryTrait};

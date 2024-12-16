@@ -17,6 +17,16 @@ pub(crate) struct AsyncEntriesFields<'a, R: 'a> {
     pub(crate) obj: &'a mut R,
 }
 
+impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryFields<'a, R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut *self.obj).poll_read(cx, buf)
+    }
+}
+
 /// An asynchronous iterator over the entries in an archive.
 pub struct AsyncEntries<'a, R: 'a> {
     pub(crate) fields: AsyncEntriesFields<'a, R>,
