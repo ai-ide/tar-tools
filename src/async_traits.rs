@@ -35,7 +35,7 @@ pub struct AsyncEntryFields<R> {
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFields<R> {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
@@ -104,7 +104,7 @@ pub trait AsyncEntryTrait {
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncRead for AsyncEntry<R> {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
