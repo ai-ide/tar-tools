@@ -3,13 +3,12 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use futures::io::{AsyncRead, AsyncSeek};
-use futures::{AsyncReadExt, Future};
+use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
+use tokio::io::{AsyncRead, AsyncSeek, AsyncReadExt, AsyncSeekExt};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::header::Header;
-use std::sync::Arc;
 
 /// Fields for managing entries iteration state
 pub(crate) struct AsyncEntriesFields<R> {
@@ -25,7 +24,7 @@ pub struct AsyncEntryFields<R> {
     pub(crate) pos: u64,
     pub(crate) header_pos: u64,
     pub(crate) file_pos: u64,
-    pub(crate) obj: Arc<R>,
+    pub(crate) obj: Arc<Mutex<R>>,
     pub(crate) pax_extensions: Option<Vec<u8>>,
     pub(crate) long_pathname: Option<Vec<u8>>,
     pub(crate) long_linkname: Option<Vec<u8>>,
@@ -38,7 +37,8 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFie
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        AsyncRead::poll_read(Pin::new(&mut &**self.obj), cx, buf)
+        let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        Pin::new(&mut *guard).poll_read(cx, buf)
     }
 }
 
@@ -55,7 +55,7 @@ pub struct AsyncEntry<R> {
     pub(crate) pos: u64,
     pub(crate) header_pos: u64,
     pub(crate) file_pos: u64,
-    pub(crate) obj: Arc<R>,
+    pub(crate) obj: Arc<Mutex<R>>,
     pub(crate) pax_extensions: Option<Vec<u8>>,
     pub(crate) long_pathname: Option<Vec<u8>>,
     pub(crate) long_linkname: Option<Vec<u8>>,
@@ -95,7 +95,8 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R>
             return Poll::Ready(Ok(0));
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        match AsyncRead::poll_read(Pin::new(&mut &**self.obj), cx, &mut buf[..amt]) {
+        let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        match Pin::new(&mut *guard).poll_read(cx, &mut buf[..amt]) {
             Poll::Ready(Ok(n)) => {
                 self.pos += n as u64;
                 Poll::Ready(Ok(n))
@@ -109,18 +110,18 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncSeek for AsyncEntry<R>
     fn poll_seek(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-        pos: futures::io::SeekFrom,
+        pos: tokio::io::SeekFrom,
     ) -> Poll<io::Result<u64>> {
         match pos {
-            futures::io::SeekFrom::Start(n) => {
+            tokio::io::SeekFrom::Start(n) => {
                 self.pos = n;
                 Poll::Ready(Ok(n))
             }
-            futures::io::SeekFrom::Current(n) => {
+            tokio::io::SeekFrom::Current(n) => {
                 self.pos = self.pos.saturating_add_signed(n);
                 Poll::Ready(Ok(self.pos))
             }
-            futures::io::SeekFrom::End(n) => {
+            tokio::io::SeekFrom::End(n) => {
                 self.pos = self.size.saturating_add_signed(n);
                 Poll::Ready(Ok(self.pos))
             }
@@ -135,7 +136,8 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEn
             return Ok(0);
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let n = (&*self.obj).read(&mut buf[..amt]).await?;
+        let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        let n = Pin::new(&mut *guard).read(&mut buf[..amt]).await?;
         self.pos += n as u64;
         Ok(n)
     }

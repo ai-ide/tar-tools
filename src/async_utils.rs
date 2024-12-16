@@ -1,6 +1,6 @@
 use std::io;
-use futures::io::{AsyncRead, AsyncSeek};
-use futures::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncSeek};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 /// Attempts to read exactly buf.len() bytes into buf.
 ///
@@ -27,6 +27,6 @@ pub(crate) async fn seek_relative<R: AsyncSeek + Unpin>(
     reader: &mut R,
     offset: i64,
 ) -> io::Result<()> {
-    reader.seek(futures::io::SeekFrom::Current(offset)).await?;
+    reader.seek(tokio::io::SeekFrom::Current(offset)).await?;
     Ok(())
 }

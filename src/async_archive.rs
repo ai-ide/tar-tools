@@ -1,12 +1,11 @@
-use std::future::Future;
 use std::io;
-use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncSeek};
+use tokio::io::{AsyncRead, AsyncSeek, AsyncReadExt, AsyncSeekExt};
+
 use crate::header::Header;
 use crate::pax::PaxExtensions;
-use std::sync::Arc;
 
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
 use crate::async_utils::{try_read_all_async, seek_relative};
@@ -21,7 +20,7 @@ pub struct AsyncArchiveReader<R> {
 
 #[derive(Clone)]
 struct ArchiveInner<R> {
-    obj: R,
+    obj: Arc<Mutex<R>>,
     pos: u64,
     unpack_xattrs: bool,
     preserve_permissions: bool,
@@ -36,7 +35,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchiveReader<R> {
     pub fn new(obj: R) -> AsyncArchiveReader<R> {
         AsyncArchiveReader {
             inner: ArchiveInner {
-                obj,
+                obj: Arc::new(Mutex::new(obj)),
                 pos: 0,
                 unpack_xattrs: false,
                 preserve_permissions: true,
@@ -122,7 +121,8 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R
         cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
     ) -> std::task::Poll<io::Result<usize>> {
-        AsyncRead::poll_read(std::pin::Pin::new(&mut self.inner.obj), cx, buf)
+        let mut guard = self.inner.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        Pin::new(&mut *guard).poll_read(cx, buf)
     }
 }
 
@@ -130,9 +130,10 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R
     fn poll_seek(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-        pos: futures::io::SeekFrom,
+        pos: tokio::io::SeekFrom,
     ) -> std::task::Poll<io::Result<u64>> {
-        AsyncSeek::poll_seek(std::pin::Pin::new(&mut self.inner.obj), cx, pos)
+        let mut guard = self.inner.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+        Pin::new(&mut *guard).poll_seek(cx, pos)
     }
 }
 
