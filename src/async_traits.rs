@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncSeek};
+use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::header::Header;
@@ -37,7 +37,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFie
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let result = {
             let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
@@ -106,7 +106,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncRead for Asy
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         if self.pos >= self.size {
             return Poll::Ready(Ok(()));
@@ -115,12 +115,18 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncRead for Asy
         let remaining = buf.remaining() as u64;
         let to_read = std::cmp::min(remaining, self.size - self.pos) as usize;
         let mut reader = AsyncMutexReader::new(self.obj.clone());
-        buf.limit(to_read);
 
-        match Pin::new(&mut reader).poll_read(cx, buf) {
+        // Create a temporary buffer for reading
+        let mut tmp = vec![0; to_read];
+        let mut tmp_buf = ReadBuf::new(&mut tmp);
+
+        match Pin::new(&mut reader).poll_read(cx, &mut tmp_buf) {
             Poll::Ready(Ok(())) => {
-                let this = self.get_mut();
-                this.pos += buf.filled().len() as u64;
+                let bytes_read = tmp_buf.filled().len();
+                if bytes_read > 0 {
+                    buf.put_slice(tmp_buf.filled());
+                    self.pos += bytes_read as u64;
+                }
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
@@ -160,7 +166,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncEntryTrait f
             return Ok(0);
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let mut read_buf = tokio::io::ReadBuf::new(&mut buf[..amt]);
+        let mut read_buf = ReadBuf::new(&mut buf[..amt]);
         {
             let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
             Pin::new(&mut *guard).poll_read(&mut Context::from_waker(futures::task::noop_waker_ref()), &mut read_buf)?;
