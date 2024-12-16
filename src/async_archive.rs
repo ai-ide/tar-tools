@@ -1,15 +1,11 @@
 use std::io;
 use std::path::Path;
-use std::pin::Pin;
+use futures::io::{AsyncRead, AsyncSeek, AsyncSeekExt};
 use async_trait::async_trait;
-use futures::io::{AsyncRead, AsyncSeek, AsyncSeekExt, AsyncReadExt};
-use std::marker;
 
-use crate::async_traits::{AsyncArchive, AsyncEntries};
+use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntryFields};
 use crate::async_utils::try_read_all_async;
 use crate::header::Header;
-use crate::entry_type::EntryType;
-use crate::error::TarError;
 
 const BLOCK_SIZE: u64 = 512;
 

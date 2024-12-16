@@ -1,27 +1,17 @@
 use std::io;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncSeek, AsyncSeekExt};
 use tokio::fs;
+use async_trait::async_trait;
 
-use crate::async_traits::{AsyncEntry, Unpacked};
+use crate::async_traits::{AsyncEntry, AsyncEntryFields};
 use crate::header::Header;
-use crate::error::TarError;
 
 const BLOCK_SIZE: u64 = 512;
 
 /// An entry within a tar archive.
 pub struct AsyncEntryReader<'a, R: AsyncRead + AsyncSeek + Unpin + Send> {
-    header: Header,
-    size: u64,
-    pos: u64,
-    header_pos: u64,
-    file_pos: u64,
-    archive: &'a mut R,
-    pax_extensions: Option<Vec<u8>>,
-    long_pathname: Option<Vec<u8>>,
-    long_linkname: Option<Vec<u8>>,
+    fields: AsyncEntryFields<'a, R>,
 }
 
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
@@ -34,56 +24,59 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
         archive: &'a mut R,
     ) -> AsyncEntryReader<'a, R> {
         AsyncEntryReader {
-            header,
-            size,
-            pos: 0,
-            header_pos,
-            file_pos,
-            archive,
-            pax_extensions: None,
-            long_pathname: None,
-            long_linkname: None,
+            fields: AsyncEntryFields {
+                header,
+                size,
+                pos: 0,
+                header_pos,
+                file_pos,
+                archive,
+                pax_extensions: None,
+                long_pathname: None,
+                long_linkname: None,
+                _marker: std::marker::PhantomData,
+            },
         }
     }
 
     /// Returns the header of this entry.
     pub fn header(&self) -> &Header {
-        &self.header
+        &self.fields.header
     }
 
     /// Returns the path name for this entry.
     pub fn path(&self) -> io::Result<PathBuf> {
-        self.header.path()
+        self.fields.header.path()
     }
 
     /// Returns the link name for this entry, if any.
     pub fn link_name(&self) -> io::Result<Option<PathBuf>> {
-        self.header.link_name()
+        self.fields.header.link_name()
     }
 
     /// Returns the size of the file this entry represents.
     pub fn size(&self) -> u64 {
-        self.size
+        self.fields.size
     }
 
     /// Sets the PAX extensions for this entry.
     pub(crate) fn set_pax_extensions(&mut self, pax: Vec<u8>) {
-        self.pax_extensions = Some(pax);
+        self.fields.pax_extensions = Some(pax);
     }
 
     /// Sets the long pathname for this entry.
     pub(crate) fn set_long_pathname(&mut self, pathname: Vec<u8>) {
-        self.long_pathname = Some(pathname);
+        self.fields.long_pathname = Some(pathname);
     }
 
     /// Sets the long linkname for this entry.
     pub(crate) fn set_long_linkname(&mut self, linkname: Vec<u8>) {
-        self.long_linkname = Some(linkname);
+        self.fields.long_linkname = Some(linkname);
     }
 
     /// Reads all bytes in this entry.
     pub async fn read_all(&mut self) -> io::Result<Vec<u8>> {
-        let mut data = Vec::with_capacity(self.size as usize);
+        let mut data = Vec::with_capacity(self.fields.size as usize);
         let mut buf = [0u8; 4096];
 
         while let Ok(n) = self.read(&mut buf).await {
@@ -100,18 +93,18 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
 #[async_trait]
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntry for AsyncEntryReader<'a, R> {
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pos >= self.size {
+        if self.fields.pos >= self.fields.size {
             return Ok(0);
         }
 
         // Seek to the correct position if necessary
-        let archive_pos = self.file_pos + self.pos;
-        self.archive.seek(futures::io::SeekFrom::Start(archive_pos)).await?;
+        let archive_pos = self.fields.file_pos + self.fields.pos;
+        self.fields.archive.seek(futures::io::SeekFrom::Start(archive_pos)).await?;
 
         // Read the data
-        let max = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let n = self.archive.read(&mut buf[..max]).await?;
-        self.pos += n as u64;
+        let max = std::cmp::min(buf.len() as u64, self.fields.size - self.fields.pos) as usize;
+        let n = self.fields.archive.read(&mut buf[..max]).await?;
+        self.fields.pos += n as u64;
         Ok(n)
     }
 
@@ -124,7 +117,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntry for AsyncEntryReade
             fs::create_dir_all(parent).await?;
         }
 
-        match self.header.entry_type() {
+        match self.fields.header.entry_type() {
             crate::entry_type::EntryType::Regular => {
                 let mut file = fs::File::create(&path).await?;
                 tokio::io::copy(&mut *self, &mut file).await?;
@@ -146,7 +139,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntry for AsyncEntryReade
 
         // Set permissions if available
         #[cfg(unix)]
-        if let Ok(mode) = self.header.mode() {
+        if let Ok(mode) = self.fields.header.mode() {
             use std::os::unix::fs::PermissionsExt;
             let perm = fs::Permissions::from_mode(mode);
             fs::set_permissions(&path, perm).await?;
