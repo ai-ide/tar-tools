@@ -11,10 +11,10 @@ use tokio::io::AsyncWriteExt;
 use crate::header::Header;
 
 /// Fields for managing entries iteration state
-pub(crate) struct AsyncEntriesFields<'a, R: 'a> {
+pub(crate) struct AsyncEntriesFields<R> {
     pub(crate) offset: u64,
     pub(crate) done: bool,
-    pub(crate) obj: &'a mut R,
+    pub(crate) obj: R,
 }
 
 /// Fields for managing entry reading state
@@ -41,9 +41,9 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryFields
 }
 
 /// An asynchronous iterator over the entries in an archive.
-pub struct AsyncEntries<'a, R: 'a> {
-    pub(crate) fields: AsyncEntriesFields<'a, R>,
-    pub(crate) _marker: PhantomData<&'a mut R>,
+pub struct AsyncEntries<R> {
+    pub(crate) fields: AsyncEntriesFields<R>,
+    pub(crate) _marker: PhantomData<R>,
 }
 
 /// An entry within a tar archive

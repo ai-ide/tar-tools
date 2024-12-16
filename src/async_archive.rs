@@ -87,12 +87,12 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
 
 #[async_trait]
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReader<R> {
-    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, Self>> {
+    async fn entries(&mut self) -> io::Result<AsyncEntries<R>> {
         Ok(AsyncEntries {
             fields: AsyncEntriesFields {
                 offset: self.inner.pos,
                 done: false,
-                obj: self,
+                obj: self.inner.obj,
             },
             _marker: PhantomData,
         })
@@ -131,9 +131,9 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R
     }
 }
 
-impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<R> {
     /// Advances the iterator, returning the next entry.
-    pub async fn next(&mut self) -> io::Result<Option<AsyncEntry<'a, R>>> {
+    pub async fn next(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
         if self.fields.done {
             return Ok(None);
         }
@@ -147,19 +147,19 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         }
     }
 
-    async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<'a, R>>> {
+    async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
         let header_pos = self.fields.offset;
         let mut header = [0; 512];
 
         // Skip to where we want to read
         let delta = header_pos as i64 - self.fields.offset as i64;
         if delta != 0 {
-            seek_relative(self.fields.obj, delta).await?;
+            seek_relative(&mut self.fields.obj, delta).await?;
             self.fields.offset = header_pos;
         }
 
         // Read the header
-        if !try_read_all_async(self.fields.obj, &mut header).await? {
+        if !try_read_all_async(&mut self.fields.obj, &mut header).await? {
             self.fields.done = true;
             return Ok(None);
         }
@@ -187,7 +187,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
             pos: 0,
             header_pos,
             file_pos,
-            obj: self.fields.obj,
+            obj: &mut self.fields.obj,
             pax_extensions: None,
             long_pathname: None,
             long_linkname: None,
@@ -201,7 +201,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         Ok(Some(entry))
     }
 
-    async fn next_entry(&mut self) -> io::Result<Option<AsyncEntry<'a, R>>> {
+    async fn next_entry(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
         loop {
             match self.next_entry_raw().await? {
                 Some(entry) => {
