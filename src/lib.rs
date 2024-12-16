@@ -30,6 +30,8 @@ pub use crate::entry_type::EntryType;
 pub use crate::header::GnuExtSparseHeader;
 pub use crate::header::{GnuHeader, GnuSparseHeader, Header, HeaderMode, OldHeader, UstarHeader};
 pub use crate::pax::{PaxExtension, PaxExtensions};
+pub use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntry};
+pub use crate::async_entry::AsyncEntryReader;
 
 mod archive;
 mod builder;
@@ -38,6 +40,9 @@ mod entry_type;
 mod error;
 mod header;
 mod pax;
+mod async_traits;
+mod async_entry;
+mod async_archive;
 
 fn other(msg: &str) -> Error {
     Error::new(ErrorKind::Other, msg)
