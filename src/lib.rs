@@ -34,15 +34,16 @@ pub use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntry};
 pub use crate::async_entry::AsyncEntryReader;
 
 mod archive;
+mod async_archive;
+mod async_entry;
+mod async_traits;
+mod async_utils;
 mod builder;
 mod entry;
 mod entry_type;
 mod error;
 mod header;
 mod pax;
-mod async_traits;
-mod async_entry;
-mod async_archive;
 
 fn other(msg: &str) -> Error {
     Error::new(ErrorKind::Other, msg)

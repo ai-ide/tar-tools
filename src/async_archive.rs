@@ -6,6 +6,7 @@ use futures::io::{AsyncRead, AsyncSeek, AsyncSeekExt, AsyncReadExt};
 use std::marker;
 
 use crate::async_traits::{AsyncArchive, AsyncEntries};
+use crate::async_utils::try_read_all_async;
 use crate::header::Header;
 use crate::entry_type::EntryType;
 use crate::error::TarError;
@@ -293,19 +294,4 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         }
         Ok(())
     }
-}
-
-// Helper function to try reading exactly buf.len() bytes into buf
-async fn try_read_all_async<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    buf: &mut [u8],
-) -> io::Result<bool> {
-    let mut read = 0;
-    while read < buf.len() {
-        match reader.read(&mut buf[read..]).await? {
-            0 => return Ok(false),
-            n => read += n,
-        }
-    }
-    Ok(true)
 }
