@@ -1,6 +1,7 @@
 use std::io;
 use std::path::Path;
-use futures::io::{AsyncRead, AsyncSeek, AsyncSeekExt};
+use futures::io::{AsyncRead, AsyncSeek};
+use futures::{AsyncReadExt, AsyncSeekExt};
 use async_trait::async_trait;
 
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntryFields};
@@ -15,42 +16,31 @@ pub struct AsyncArchiveReader<R> {
 }
 
 struct ArchiveInner<R> {
-    pos: u64,
     obj: R,
-    mask: Option<u32>,
-    ignore_zeros: bool,
+    pos: u64,
     unpack_xattrs: bool,
     preserve_permissions: bool,
     preserve_mtime: bool,
     preserve_ownerships: bool,
     overwrite: bool,
+    ignore_zeros: bool,
 }
 
-/// Internal fields of AsyncEntries iterator
-struct AsyncEntriesFields<'a, R: 'a> {
-    archive: &'a mut AsyncArchiveReader<R>,
-    next: u64,
-    done: bool,
-    raw: bool,
-}
-
-impl<'a, R: AsyncRead + AsyncSeek + Unpin> AsyncEntries<'a, R> {
-    fn new(archive: &'a mut AsyncArchiveReader<R>) -> Self {
-        AsyncEntries {
-            fields: AsyncEntriesFields {
-                archive,
-                next: 0,
-                done: false,
-                raw: false,
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
+    /// Creates a new archive with the underlying object as the reader.
+    pub fn new(obj: R) -> AsyncArchiveReader<R> {
+        AsyncArchiveReader {
+            inner: ArchiveInner {
+                obj,
+                pos: 0,
+                unpack_xattrs: false,
+                preserve_permissions: true,
+                preserve_mtime: true,
+                preserve_ownerships: true,
+                overwrite: false,
+                ignore_zeros: false,
             },
-            _marker: marker::PhantomData,
         }
-    }
-
-    /// Indicates whether this iterator will return raw entries or not.
-    pub fn raw(mut self, raw: bool) -> Self {
-        self.fields.raw = raw;
-        self
     }
 }
 
@@ -61,13 +51,12 @@ impl<R: AsyncRead + AsyncSeek + Unpin> AsyncArchiveReader<R> {
             inner: ArchiveInner {
                 obj,
                 pos: 0,
-                mask: None,
-                ignore_zeros: false,
                 unpack_xattrs: false,
                 preserve_permissions: false,
                 preserve_mtime: true,
                 preserve_ownerships: false,
                 overwrite: false,
+                ignore_zeros: false,
             },
         }
     }
@@ -117,8 +106,18 @@ impl<R: AsyncRead + AsyncSeek + Unpin> AsyncArchiveReader<R> {
 
 #[async_trait]
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReader<R> {
-    async fn entries(&mut self) -> io::Result<AsyncEntries<'_>> {
-        Ok(AsyncEntries::new(self))
+    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, Self>>
+    where
+        Self: AsyncRead + AsyncSeek + Sized,
+    {
+        Ok(AsyncEntries {
+            fields: AsyncEntriesFields {
+                offset: self.inner.pos,
+                done: false,
+                obj: &mut self.inner.obj,
+            },
+            _marker: std::marker::PhantomData,
+        })
     }
 
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()> {
@@ -158,6 +157,26 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReade
         }
 
         Ok(())
+    }
+}
+
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        AsyncRead::poll_read(std::pin::Pin::new(&mut self.inner.obj), cx, buf)
+    }
+}
+
+impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R> {
+    fn poll_seek(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        pos: futures::io::SeekFrom,
+    ) -> std::task::Poll<io::Result<u64>> {
+        AsyncSeek::poll_seek(std::pin::Pin::new(&mut self.inner.obj), cx, pos)
     }
 }
 

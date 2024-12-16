@@ -1,6 +1,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
-use futures::io::{AsyncRead, AsyncSeek, AsyncSeekExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use futures::io::{AsyncRead, AsyncSeek};
+use futures::{AsyncReadExt, AsyncSeekExt};
 use tokio::fs;
 use async_trait::async_trait;
 
@@ -46,12 +49,12 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
 
     /// Returns the path name for this entry.
     pub fn path(&self) -> io::Result<PathBuf> {
-        self.fields.header.path()
+        Ok(self.fields.header.path()?.into_owned().into())
     }
 
     /// Returns the link name for this entry, if any.
     pub fn link_name(&self) -> io::Result<Option<PathBuf>> {
-        self.fields.header.link_name()
+        Ok(self.fields.header.link_name()?.map(|p| p.into_owned().into()))
     }
 
     /// Returns the size of the file this entry represents.
@@ -146,5 +149,23 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntry for AsyncEntryReade
         }
 
         Ok(())
+    }
+}
+
+impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> tokio::io::AsyncRead for AsyncEntryReader<'a, R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let mut temp_buf = vec![0u8; buf.remaining()];
+        match AsyncRead::poll_read(Pin::new(&mut self.fields.archive), cx, &mut temp_buf) {
+            Poll::Ready(Ok(n)) => {
+                buf.put_slice(&temp_buf[..n]);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }

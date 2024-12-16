@@ -1,5 +1,6 @@
 use std::io;
 use futures::io::{AsyncRead, AsyncSeek};
+use futures::{AsyncReadExt, AsyncSeekExt};
 
 /// Attempts to read exactly buf.len() bytes into buf.
 ///
@@ -9,7 +10,6 @@ pub(crate) async fn try_read_all_async<R: AsyncRead + Unpin>(
     reader: &mut R,
     buf: &mut [u8],
 ) -> io::Result<bool> {
-    use futures::io::AsyncReadExt;
     let mut read = 0;
     while read < buf.len() {
         match reader.read(&mut buf[read..]).await? {
