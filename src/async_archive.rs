@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry, AsyncEntryTrait};
 use crate::async_utils::{try_read_all_async, seek_relative};
 use crate::header::Header;
-use crate::entry_type::EntryType;
 
 const BLOCK_SIZE: u64 = 512;
 
@@ -114,7 +113,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReade
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R> {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
     ) -> std::task::Poll<io::Result<usize>> {
@@ -124,7 +123,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R> {
     fn poll_seek(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         pos: futures::io::SeekFrom,
     ) -> std::task::Poll<io::Result<u64>> {
@@ -209,8 +208,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
                     let header = entry.header;
                     let is_recognized_header = header.as_gnu().is_some() ||
                         header.as_ustar().is_some() ||
-                        header.as_old().is_some() ||
-                        header.as_ustar().is_some();
+                        !header.as_bytes().iter().all(|&x| x == 0);
 
                     if is_recognized_header {
                         return Ok(Some(entry));

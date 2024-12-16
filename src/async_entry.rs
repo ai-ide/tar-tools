@@ -19,6 +19,28 @@ pub struct AsyncEntryReader<'a, R: AsyncRead + AsyncSeek + Unpin + Send> {
     fields: AsyncEntryFields<'a, R>,
 }
 
+impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryReader<'a, R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let max = std::cmp::min(buf.len() as u64, this.fields.size - this.fields.pos) as usize;
+        if max == 0 {
+            return Poll::Ready(Ok(0));
+        }
+
+        match Pin::new(&mut this.fields.obj).poll_read(cx, &mut buf[..max]) {
+            Poll::Ready(Ok(n)) => {
+                this.fields.pos += n as u64;
+                Poll::Ready(Ok(n))
+            }
+            other => other,
+        }
+    }
+}
+
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
     /// Creates a new AsyncEntryReader.
     pub(crate) fn new(
@@ -154,7 +176,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
 
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> tokio::io::AsyncRead for AsyncEntryReader<'a, R> {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
