@@ -35,8 +35,8 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFie
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
         Pin::new(&mut *guard).poll_read(cx, buf)
     }
@@ -89,17 +89,19 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R>
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         if self.pos >= self.size {
-            return Poll::Ready(Ok(0));
+            return Poll::Ready(Ok(()));
         }
-        let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
+        let amt = std::cmp::min(buf.remaining() as u64, self.size - self.pos) as usize;
+        let initial_remaining = buf.remaining();
         let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        match Pin::new(&mut *guard).poll_read(cx, &mut buf[..amt]) {
-            Poll::Ready(Ok(n)) => {
+        match Pin::new(&mut *guard).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let n = initial_remaining - buf.remaining();
                 self.pos += n as u64;
-                Poll::Ready(Ok(n))
+                Poll::Ready(Ok(()))
             }
             other => other,
         }
@@ -136,8 +138,12 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEn
             return Ok(0);
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        let n = Pin::new(&mut *guard).read(&mut buf[..amt]).await?;
+        let mut read_buf = tokio::io::ReadBuf::new(&mut buf[..amt]);
+        {
+            let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+            Pin::new(&mut *guard).poll_read(&mut Context::from_waker(futures::task::noop_waker_ref()), &mut read_buf)?;
+        }
+        let n = read_buf.filled().len();
         self.pos += n as u64;
         Ok(n)
     }

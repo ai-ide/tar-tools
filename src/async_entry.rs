@@ -21,21 +21,23 @@ pub struct AsyncEntryReader<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> {
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryReader<R> {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        let max = std::cmp::min(buf.len() as u64, this.fields.size - this.fields.pos) as usize;
+        let max = std::cmp::min(buf.remaining() as u64, this.fields.size - this.fields.pos) as usize;
         if max == 0 {
-            return Poll::Ready(Ok(0));
+            return Poll::Ready(Ok(()));
         }
 
+        let initial_remaining = buf.remaining();
         let mut guard = this.fields.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-        match Pin::new(&mut *guard).poll_read(cx, &mut buf[..max]) {
-            Poll::Ready(Ok(n)) => {
+        match Pin::new(&mut *guard).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let n = initial_remaining - buf.remaining();
                 this.fields.pos += n as u64;
-                Poll::Ready(Ok(n))
+                Poll::Ready(Ok(()))
             }
             other => other,
         }
@@ -116,8 +118,16 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEn
         guard.seek(tokio::io::SeekFrom::Start(archive_pos)).await?;
 
         // Read the data
-        let max = std::cmp::min(buf.len() as u64, self.fields.size - self.fields.pos) as usize;
-        let n = guard.read(&mut buf[..max]).await?;
+        let amt = std::cmp::min(buf.len() as u64, self.fields.size - self.fields.pos) as usize;
+        let mut read_buf = tokio::io::ReadBuf::new(&mut buf[..amt]);
+
+        // Scope the MutexGuard to ensure it's dropped before the await
+        {
+            let mut guard = self.fields.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
+            Pin::new(&mut *guard).poll_read(&mut Context::from_waker(futures::task::noop_waker_ref()), &mut read_buf)?;
+        }
+
+        let n = read_buf.filled().len();
         self.fields.pos += n as u64;
         Ok(n)
     }

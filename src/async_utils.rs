@@ -1,6 +1,5 @@
 use std::io;
-use tokio::io::{AsyncRead, AsyncSeek};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncSeek, AsyncReadExt, AsyncSeekExt};
 
 /// Attempts to read exactly buf.len() bytes into buf.
 ///
@@ -12,7 +11,8 @@ pub(crate) async fn try_read_all_async<R: AsyncRead + Unpin>(
 ) -> io::Result<bool> {
     let mut read = 0;
     while read < buf.len() {
-        match reader.read(&mut buf[read..]).await? {
+        let mut read_buf = tokio::io::ReadBuf::new(&mut buf[read..]);
+        match reader.read_buf(&mut read_buf).await? {
             0 => return Ok(false),
             n => read += n,
         }
