@@ -5,6 +5,9 @@
 //! an archive is never required to be fully resident in memory, and all objects
 //! provide largely a streaming interface to read bytes from.
 //!
+//! The library supports both synchronous and asynchronous operations, allowing
+//! for efficient non-blocking I/O when working with tar archives.
+//!
 //! [1]: http://en.wikipedia.org/wiki/Tar_%28computing%29
 
 // More docs about the detailed tar format can also be found here:
@@ -23,6 +26,7 @@
 
 use std::io::{Error, ErrorKind};
 
+// Synchronous interfaces
 pub use crate::archive::{Archive, Entries};
 pub use crate::builder::{Builder, EntryWriter};
 pub use crate::entry::{Entry, Unpacked};
@@ -31,7 +35,16 @@ pub use crate::header::GnuExtSparseHeader;
 pub use crate::header::{GnuHeader, GnuSparseHeader, Header, HeaderMode, OldHeader, UstarHeader};
 pub use crate::pax::{PaxExtension, PaxExtensions};
 
+// Asynchronous interfaces
+pub use crate::async_archive::AsyncArchiveReader;
+pub use crate::async_entry::AsyncEntryReader;
+pub use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntry};
+
 mod archive;
+mod async_archive;
+mod async_entry;
+mod async_traits;
+mod async_utils;
 mod builder;
 mod entry;
 mod entry_type;
