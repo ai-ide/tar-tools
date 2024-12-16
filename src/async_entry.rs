@@ -2,6 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::fs::Permissions;
 use futures::io::{AsyncRead, AsyncSeek};
 use futures::{AsyncReadExt, AsyncSeekExt};
 use tokio::fs;
@@ -144,7 +145,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
         #[cfg(unix)]
         if let Ok(mode) = self.fields.header.mode() {
             use std::os::unix::fs::PermissionsExt;
-            let perm = fs::Permissions::from_mode(mode);
+            let perm = Permissions::from_mode(mode);
             fs::set_permissions(&path, perm).await?;
         }
 

@@ -2,11 +2,10 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
 use futures::io::{AsyncRead, AsyncSeek};
-use futures::{AsyncReadExt, AsyncSeekExt};
 use async_trait::async_trait;
 
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
-use crate::async_utils::try_read_all_async;
+use crate::async_utils::{try_read_all_async, seek_relative};
 use crate::header::Header;
 
 const BLOCK_SIZE: u64 = 512;
@@ -89,10 +88,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
 
 #[async_trait]
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReader<R> {
-    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, Self>>
-    where
-        Self: AsyncRead + AsyncSeek + Sized,
-    {
+    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, R>> {
         Ok(AsyncEntries {
             fields: AsyncEntriesFields {
                 offset: self.inner.pos,
@@ -171,8 +167,9 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         self.fields.offset += BLOCK_SIZE;
 
         // Validate the header
-        let sum = Header::new(&header);
-        if sum.is_none() {
+        let sum = Header::new_old();
+        sum.as_bytes_mut().copy_from_slice(&header);
+        if !sum.as_bytes().iter().all(|i| *i == 0) {
             // Try to figure out if we're at the end of the archive or not
             let is_zero = header.iter().all(|i| *i == 0);
             if is_zero {
@@ -181,9 +178,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
             }
         }
 
-        let header = sum.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid tar header")
-        })?;
+        let header = sum;
 
         let file_pos = self.fields.offset;
         let size = header.size()?;
