@@ -113,7 +113,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReade
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R> {
     fn poll_read(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
     ) -> std::task::Poll<io::Result<usize>> {
@@ -123,7 +123,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R> {
     fn poll_seek(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         pos: futures::io::SeekFrom,
     ) -> std::task::Poll<io::Result<u64>> {
@@ -176,18 +176,18 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
             }
         }
 
-        let header = sum;
+        let header = Header::from_byte_slice(&header);
 
         let file_pos = self.fields.offset;
         let size = header.size()?;
 
         let entry = AsyncEntry {
-            header,
+            header: header.clone(),
             size,
             pos: 0,
             header_pos,
             file_pos,
-            archive: self.fields.obj,
+            obj: self.fields.obj,
             pax_extensions: None,
             long_pathname: None,
             long_linkname: None,
@@ -205,10 +205,9 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         loop {
             match self.next_entry_raw().await? {
                 Some(entry) => {
-                    let header = entry.header;
-                    let is_recognized_header = header.as_gnu().is_some() ||
-                        header.as_ustar().is_some() ||
-                        !header.as_bytes().iter().all(|&x| x == 0);
+                    let is_recognized_header = entry.header.as_gnu().is_some() ||
+                        entry.header.as_ustar().is_some() ||
+                        !entry.header.as_bytes().iter().all(|&x| x == 0);
 
                     if is_recognized_header {
                         return Ok(Some(entry));

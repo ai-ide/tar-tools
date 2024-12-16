@@ -176,7 +176,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
 
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> tokio::io::AsyncRead for AsyncEntryReader<'a, R> {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
