@@ -2,20 +2,21 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncSeek};
 use async_trait::async_trait;
 
 use crate::header::Header;
 
-use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
+use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry, AsyncEntryTrait};
 use crate::async_utils::{try_read_all_async, seek_relative, AsyncMutexReader};
 
 const BLOCK_SIZE: u64 = 512;
 
 /// An asynchronous tar archive reader.
 #[derive(Clone)]
-pub struct AsyncArchiveReader<R> {
+pub struct AsyncArchiveReader<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> {
     inner: ArchiveInner<R>,
 }
 
@@ -91,7 +92,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchiveReader<R> {
 }
 
 #[async_trait]
-impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchive for AsyncArchiveReader<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + Clone + 'static> AsyncArchive for AsyncArchiveReader<R> {
     async fn entries(&mut self) -> io::Result<AsyncEntries<AsyncArchiveReader<R>>> {
         Ok(AsyncEntries {
             fields: AsyncEntriesFields {
@@ -104,19 +105,18 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchive for AsyncArch
     }
 
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()> {
-        let dst = dst.as_ref();
         let mut entries = self.entries().await?;
-
-        while let Some(entry) = entries.next().await? {
+        while let Ok(Some(entry)) = entries.next().await {
             let mut entry = entry;
-            entry.unpack(dst).await?;
+            let path_buf = entry.header().path()?.to_path_buf();
+            let path = dst.as_ref().join(path_buf.strip_prefix("/").unwrap_or(&path_buf));
+            AsyncEntryTrait::unpack(&mut entry, &path).await?;
         }
-
         Ok(())
     }
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncRead for AsyncArchiveReader<R> {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -127,7 +127,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncArchiveReader<R
     }
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncArchiveReader<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncSeek for AsyncArchiveReader<R> {
     fn start_seek(self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
         let mut guard = self.inner.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
         Pin::new(&mut *guard).start_seek(pos)

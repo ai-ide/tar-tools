@@ -1,4 +1,5 @@
 use std::io;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -46,7 +47,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> tokio::io::AsyncRead for As
 }
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> tokio::io::AsyncSeek for AsyncEntryReader<R> {
-    fn start_seek(mut self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
+    fn start_seek(self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
         let this = self.get_mut();
         match pos {
             tokio::io::SeekFrom::Start(n) => {

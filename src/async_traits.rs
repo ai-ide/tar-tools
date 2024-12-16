@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncSeek};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::header::Header;
+use crate::async_utils::AsyncMutexReader;
 
 /// Fields for managing entries iteration state
 pub(crate) struct AsyncEntriesFields<R> {
@@ -51,6 +52,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFie
 }
 
 /// An asynchronous iterator over the entries in an archive.
+#[derive(Clone)]
 pub struct AsyncEntries<R> {
     pub(crate) fields: AsyncEntriesFields<R>,
     pub(crate) _marker: PhantomData<R>,
@@ -68,6 +70,12 @@ pub struct AsyncEntry<R> {
     pub(crate) long_pathname: Option<Vec<u8>>,
     pub(crate) long_linkname: Option<Vec<u8>>,
     pub(crate) _marker: PhantomData<R>,
+}
+
+impl<R> AsyncEntry<R> {
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
 }
 
 /// Async interface for reading tar archives.
@@ -93,7 +101,7 @@ pub trait AsyncEntryTrait {
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()>;
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncRead for AsyncEntry<R> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -102,24 +110,25 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntry<R>
         if self.pos >= self.size {
             return Poll::Ready(Ok(()));
         }
-        let amt = std::cmp::min(buf.remaining() as u64, self.size - self.pos) as usize;
-        let initial_remaining = buf.remaining();
 
-        let result = {
-            let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-            Pin::new(&mut *guard).poll_read(cx, buf)
-        };
+        let remaining = buf.remaining() as u64;
+        // Use remaining directly since we already check size bounds
+        let mut reader = AsyncMutexReader::new(self.obj.clone());
 
-        if let Poll::Ready(Ok(())) = result {
-            let this = self.get_mut();
-            this.pos += (initial_remaining - buf.remaining()) as u64;
+        match Pin::new(&mut reader).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let this = self.get_mut();
+                this.pos += buf.filled().len() as u64;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
         }
-        result
     }
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncSeek for AsyncEntry<R> {
-    fn start_seek(mut self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncSeek for AsyncEntry<R> {
+    fn start_seek(self: Pin<&mut Self>, pos: tokio::io::SeekFrom) -> io::Result<()> {
         let this = self.get_mut();
         match pos {
             tokio::io::SeekFrom::Start(n) => {
@@ -143,7 +152,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncSeek for AsyncEntry<R>
 }
 
 #[async_trait]
-impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEntry<R> {
+impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncEntryTrait for AsyncEntry<R> {
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.pos >= self.size {
             return Ok(0);
@@ -163,7 +172,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEn
         let mut buf = vec![0; self.size as usize];
         let mut pos = 0;
         while pos < buf.len() {
-            match AsyncReadExt::read(self, &mut buf[pos..]).await? {
+            match AsyncEntryTrait::read(self, &mut buf[pos..]).await? {
                 0 => break,
                 n => pos += n,
             }
@@ -184,7 +193,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncEntryTrait for AsyncEn
             crate::entry_type::EntryType::Regular => {
                 let mut file = fs::File::create(&path).await?;
                 let mut buf = vec![0; 8192];
-                while let Ok(n) = AsyncReadExt::read(self, &mut buf).await {
+                while let Ok(n) = AsyncEntryTrait::read(self, &mut buf).await {
                     if n == 0 { break; }
                     file.write_all(&buf[..n]).await?;
                 }
