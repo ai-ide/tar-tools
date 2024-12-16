@@ -2,6 +2,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
 use futures::io::{AsyncRead, AsyncSeek};
+use futures::AsyncReadExt;
 use async_trait::async_trait;
 
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry};
@@ -44,8 +45,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
     }
 
     /// Sets the mask for file permissions when unpacking.
-    pub fn set_mask(&mut self, mask: Option<u32>) -> &mut Self {
-        // PLACEHOLDER: existing implementation
+    pub fn set_mask(&mut self, _mask: Option<u32>) -> &mut Self {
         self
     }
 
@@ -88,12 +88,12 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchiveReader<R> {
 
 #[async_trait]
 impl<R: AsyncRead + AsyncSeek + Unpin + Send> AsyncArchive for AsyncArchiveReader<R> {
-    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, R>> {
+    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, Self>> {
         Ok(AsyncEntries {
             fields: AsyncEntriesFields {
                 offset: self.inner.pos,
                 done: false,
-                obj: &mut self.inner.obj,
+                obj: self,
             },
             _marker: PhantomData,
         })
@@ -167,8 +167,8 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         self.fields.offset += BLOCK_SIZE;
 
         // Validate the header
-        let sum = Header::new_old();
-        sum.as_bytes_mut().copy_from_slice(&header);
+        let mut sum = Header::new_old();
+        sum.as_bytes().copy_from_slice(&header);
         if !sum.as_bytes().iter().all(|i| *i == 0) {
             // Try to figure out if we're at the end of the archive or not
             let is_zero = header.iter().all(|i| *i == 0);
@@ -221,7 +221,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         }
     }
 
-    async fn skip(&mut self, mut amt: u64) -> io::Result<()> {
+    async fn skip(&mut self, amt: u64) -> io::Result<()> {
         self.fields.offset += amt;
         Ok(())
     }

@@ -5,10 +5,12 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncSeek};
+use futures::AsyncReadExt;
 use tokio::fs;
+use tokio::io::AsyncRead as TokioAsyncRead;
 use crate::header::Header;
 
-/// Fields for entries iterator state
+/// Fields for managing entries iteration state
 pub(crate) struct AsyncEntriesFields<'a, R: 'a> {
     pub(crate) offset: u64,
     pub(crate) done: bool,
@@ -35,13 +37,11 @@ pub struct AsyncEntry<'a, R: 'a> {
     pub(crate) _marker: PhantomData<&'a ()>,
 }
 
-/// Async interface for reading and unpacking tar archives.
+/// Async interface for reading tar archives.
 #[async_trait]
-pub trait AsyncArchive {
+pub trait AsyncArchive: AsyncRead + AsyncSeek + Sized {
     /// Returns an iterator over the entries in this archive.
-    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, Self>>
-    where
-        Self: AsyncRead + AsyncSeek + Sized;
+    async fn entries(&mut self) -> io::Result<AsyncEntries<'_, Self>>;
 
     /// Unpacks the entire archive into the specified directory.
     async fn unpack<P: AsRef<Path> + Send>(&mut self, dst: P) -> io::Result<()>;
@@ -70,7 +70,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<'a, R
             return Poll::Ready(Ok(0));
         }
         let amt = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let fut = self.archive.read(&mut buf[..amt]);
+        let fut = AsyncReadExt::read(&mut self.archive, &mut buf[..amt]);
         futures::pin_mut!(fut);
         match fut.poll(cx) {
             Poll::Ready(Ok(n)) => {
@@ -85,7 +85,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntry<'a, R
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncSeek for AsyncEntry<'a, R> {
     fn poll_seek(
         mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        _cx: &mut Context<'_>,
         pos: futures::io::SeekFrom,
     ) -> Poll<io::Result<u64>> {
         match pos {
@@ -141,7 +141,11 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
         match self.header.entry_type() {
             crate::entry_type::EntryType::Regular => {
                 let mut file = fs::File::create(&path).await?;
-                tokio::io::copy(self, &mut file).await?;
+                let mut buf = vec![0; 8192];
+                while let Ok(n) = self.read(&mut buf).await {
+                    if n == 0 { break; }
+                    file.write_all(&buf[..n]).await?;
+                }
             }
             crate::entry_type::EntryType::Directory => {
                 fs::create_dir_all(&path).await?;
