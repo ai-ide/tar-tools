@@ -140,16 +140,21 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
             return Ok(None);
         }
 
-        let done = {
-            let entry = self.next_entry_raw().await?;
-            if entry.is_none() {
-                true
-            } else {
-                return Ok(entry);
+        let entry_result = self.next_entry_raw().await?;
+        match entry_result {
+            Some(entry) => {
+                if entry.header.as_bytes().iter().all(|&x| x == 0) {
+                    self.fields.done = true;
+                    Ok(None)
+                } else {
+                    Ok(Some(entry))
+                }
             }
-        };
-        self.fields.done = done;
-        Ok(None)
+            None => {
+                self.fields.done = true;
+                Ok(None)
+            }
+        }
     }
 
     async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
@@ -207,22 +212,22 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
     }
 
     async fn next_entry(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
-        loop {
-            let entry = self.next_entry_raw().await?;
-            match entry {
-                Some(entry) => {
-                    let is_recognized_header = entry.header.as_ustar().is_some() ||
-                        entry.header.as_gnu().is_some() ||
-                        !entry.header.as_bytes().iter().all(|&x| x == 0);
+        let mut entry_result = self.next_entry_raw().await?;
 
-                    if is_recognized_header {
-                        return Ok(Some(entry));
-                    }
-                    self.skip().await?;
-                }
-                None => return Ok(None),
+        while let Some(entry) = entry_result {
+            let is_recognized_header = entry.header.as_ustar().is_some() ||
+                entry.header.as_gnu().is_some() ||
+                !entry.header.as_bytes().iter().all(|&x| x == 0);
+
+            if is_recognized_header {
+                return Ok(Some(entry));
             }
+
+            self.skip().await?;
+            entry_result = self.next_entry_raw().await?;
         }
+
+        Ok(None)
     }
 
     async fn skip(&mut self) -> io::Result<()> {
