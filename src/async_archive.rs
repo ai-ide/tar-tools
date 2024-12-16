@@ -167,9 +167,8 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntries<'a, R> {
         self.fields.offset += BLOCK_SIZE;
 
         // Validate the header
-        let mut sum = Header::new_old();
-        sum.as_bytes().copy_from_slice(&header);
-        if !sum.as_bytes().iter().all(|i| *i == 0) {
+        let sum = Header::new_old();
+        if sum.as_bytes() != header.as_ref() {
             // Try to figure out if we're at the end of the archive or not
             let is_zero = header.iter().all(|i| *i == 0);
             if is_zero {

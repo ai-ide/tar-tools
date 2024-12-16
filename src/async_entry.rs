@@ -9,14 +9,14 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use async_trait::async_trait;
 
-use crate::async_traits::{AsyncEntry, AsyncEntryTrait};
+use crate::async_traits::{AsyncEntryFields, AsyncEntryTrait};
 use crate::header::Header;
 
 const BLOCK_SIZE: u64 = 512;
 
 /// An entry within a tar archive.
 pub struct AsyncEntryReader<'a, R: AsyncRead + AsyncSeek + Unpin + Send> {
-    fields: AsyncEntry<'a, R>,
+    fields: AsyncEntryFields<'a, R>,
 }
 
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
@@ -29,17 +29,16 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryReader<'a, R> {
         archive: &'a mut R,
     ) -> AsyncEntryReader<'a, R> {
         AsyncEntryReader {
-            fields: AsyncEntry {
+            fields: AsyncEntryFields {
                 header,
                 size,
                 pos: 0,
                 header_pos,
                 file_pos,
-                archive,
+                obj: archive,
                 pax_extensions: None,
                 long_pathname: None,
                 long_linkname: None,
-                _marker: std::marker::PhantomData,
             },
         }
     }
@@ -89,11 +88,11 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncEntryTrait for AsyncEntry
 
         // Seek to the correct position if necessary
         let archive_pos = self.fields.file_pos + self.fields.pos;
-        self.fields.archive.seek(futures::io::SeekFrom::Start(archive_pos)).await?;
+        self.fields.obj.seek(futures::io::SeekFrom::Start(archive_pos)).await?;
 
         // Read the data
         let max = std::cmp::min(buf.len() as u64, self.fields.size - self.fields.pos) as usize;
-        let n = self.fields.archive.read(&mut buf[..max]).await?;
+        let n = self.fields.obj.read(&mut buf[..max]).await?;
         self.fields.pos += n as u64;
         Ok(n)
     }
@@ -160,7 +159,7 @@ impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> tokio::io::AsyncRead for Async
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let mut temp_buf = vec![0u8; buf.remaining()];
-        match AsyncRead::poll_read(Pin::new(&mut self.fields.archive), cx, &mut temp_buf) {
+        match AsyncRead::poll_read(Pin::new(&mut self.fields.obj), cx, &mut temp_buf) {
             Poll::Ready(Ok(n)) => {
                 buf.put_slice(&temp_buf[..n]);
                 Poll::Ready(Ok(()))

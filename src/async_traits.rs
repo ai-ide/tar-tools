@@ -17,6 +17,19 @@ pub(crate) struct AsyncEntriesFields<'a, R: 'a> {
     pub(crate) obj: &'a mut R,
 }
 
+/// Fields for managing entry reading state
+pub struct AsyncEntryFields<'a, R: 'a> {
+    pub(crate) header: Header,
+    pub(crate) size: u64,
+    pub(crate) pos: u64,
+    pub(crate) header_pos: u64,
+    pub(crate) file_pos: u64,
+    pub(crate) obj: &'a mut R,
+    pub(crate) pax_extensions: Option<Vec<u8>>,
+    pub(crate) long_pathname: Option<Vec<u8>>,
+    pub(crate) long_linkname: Option<Vec<u8>>,
+}
+
 impl<'a, R: AsyncRead + AsyncSeek + Unpin + Send> AsyncRead for AsyncEntryFields<'a, R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
