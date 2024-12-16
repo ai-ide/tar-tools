@@ -140,11 +140,13 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
             return Ok(None);
         }
 
-        let entry = self.next_entry_raw().await?;
-        if entry.is_none() {
-            self.fields.done = true;
+        match self.next_entry_raw().await? {
+            Some(entry) => Ok(Some(entry)),
+            None => {
+                self.fields.done = true;
+                Ok(None)
+            }
         }
-        Ok(entry)
     }
 
     async fn next_entry_raw(&mut self) -> io::Result<Option<AsyncEntry<'_, R>>> {
@@ -206,9 +208,9 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
             let entry = self.next_entry_raw().await?;
             match entry {
                 Some(entry) => {
-                    let is_recognized_header = entry.header.is_ustar() ||
-                        entry.header.is_gnu() ||
-                        entry.header.is_old_gnu();
+                    let is_recognized_header = entry.header.as_ustar().is_some() ||
+                        entry.header.as_gnu().is_some() ||
+                        entry.header.as_old_gnu().is_some();
 
                     if is_recognized_header {
                         return Ok(Some(entry));
