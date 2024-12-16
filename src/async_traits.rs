@@ -35,7 +35,7 @@ pub struct AsyncEntryFields<R> {
 
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync> AsyncRead for AsyncEntryFields<R> {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
@@ -74,6 +74,7 @@ pub struct AsyncEntry<R> {
 }
 
 impl<R> AsyncEntry<R> {
+    /// Returns a reference to the header of this entry.
     pub fn header(&self) -> &Header {
         &self.header
     }
@@ -169,7 +170,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + 'static> AsyncEntryTrait f
         let mut read_buf = ReadBuf::new(&mut buf[..amt]);
         {
             let mut guard = self.obj.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock poisoned"))?;
-            Pin::new(&mut *guard).poll_read(&mut Context::from_waker(futures::task::noop_waker_ref()), &mut read_buf)?;
+            let _ = Pin::new(&mut *guard).poll_read(&mut Context::from_waker(futures::task::noop_waker_ref()), &mut read_buf)?;
         }
         let n = read_buf.filled().len();
         self.pos += n as u64;
