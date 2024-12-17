@@ -94,6 +94,20 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncArchiveReader<R> {
 #[async_trait]
 impl<R: AsyncRead + AsyncSeek + Unpin + Send + Sync + Clone + 'static> AsyncArchive for AsyncArchiveReader<R> {
     async fn entries(&mut self) -> io::Result<AsyncEntries<AsyncArchiveReader<R>>> {
+        // Validate first header before creating entries
+        let mut header = [0; 512];
+        let mut reader = AsyncMutexReader::new(self.inner.obj.clone());
+        if !try_read_all_async(&mut reader, &mut header).await? {
+            return Err(other("archive has invalid header"));
+        }
+        // Check if first header is all zeros
+        if header.iter().all(|&x| x == 0) {
+            return Err(other("archive has invalid header"));
+        }
+        // Reset position since entries will read the header again
+        let mut reader = AsyncMutexReader::new(self.inner.obj.clone());
+        seek_relative(&mut reader, 0).await?;
+
         Ok(AsyncEntries {
             fields: AsyncEntriesFields {
                 offset: self.inner.pos,
