@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncSeek};
 use async_trait::async_trait;
 
-use crate::header::Header;
+use crate::{header::Header, other};
 
 use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntriesFields, AsyncEntry, AsyncEntryTrait};
 use crate::async_utils::{try_read_all_async, seek_relative, AsyncMutexReader};
@@ -146,20 +146,14 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
             return Ok(None);
         }
 
-        let entry_result = self.next_entry_raw().await?;
-        match entry_result {
-            Some(entry) => {
-                if entry.header.as_bytes().iter().all(|&x| x == 0) {
-                    self.fields.done = true;
-                    Ok(None)
-                } else {
-                    Ok(Some(entry))
-                }
-            }
-            None => {
+        // Let next_entry_raw handle all header validation
+        match self.next_entry_raw().await {
+            Ok(Some(entry)) => Ok(Some(entry)),
+            Ok(None) => {
                 self.fields.done = true;
                 Ok(None)
             }
+            Err(e) => Err(e),
         }
     }
 
@@ -183,17 +177,57 @@ impl<R: AsyncRead + AsyncSeek + Unpin + Send + Clone> AsyncEntries<AsyncArchiveR
         }
         self.fields.offset += BLOCK_SIZE;
 
-        // Validate the header
-        let sum = Header::new_old();
-        if sum.as_bytes() != header.as_ref() {
-            // Try to figure out if we're at the end of the archive or not
-            let is_zero = header.iter().all(|i| *i == 0);
-            if is_zero {
+        // First check if it's all zeros (end of archive)
+        let is_zero = header.iter().all(|i| *i == 0);
+        if is_zero {
+            // All-zero header at start of archive is an error
+            if self.fields.offset == BLOCK_SIZE {
+                return Err(other("archive has invalid header"));
+            }
+            // All-zero header after valid entries indicates end of archive
+            if !self.fields.obj.inner.ignore_zeros {
                 self.fields.done = true;
                 return Ok(None);
             }
+            return Err(other("archive header all zeros but ignore_zeros is true"));
         }
 
+        // Check if all bytes are valid ASCII
+        if header.iter().any(|&b| b != 0 && !b.is_ascii()) {
+            return Err(other("archive header contains invalid bytes"));
+        }
+
+        // Only check ustar magic if basic validation passed
+        let magic = &header[257..265];
+        if magic != b"ustar\x0000" && magic != b"ustar  \x00" {
+            return Err(other("archive header not recognized"));
+        }
+
+        // Validate checksum field format and value
+        let cksum_valid = header[148..156]
+            .iter()
+            .all(|&b| b == b' ' || b == 0 || (b >= b'0' && b <= b'7'));
+        if !cksum_valid {
+            return Err(other("archive header checksum field contains invalid characters"));
+        }
+
+        let sum = header[..148]
+            .iter()
+            .chain(&header[156..])
+            .fold(0, |a, b| a + (*b as u32))
+            + 8 * 32;
+
+        let cksum = u32::from_str_radix(
+            std::str::from_utf8(&header[148..156])
+                .map_err(|_| other("invalid header checksum"))?,
+            8,
+        ).map_err(|_| other("invalid header checksum"))?;
+
+        if sum != cksum {
+            return Err(other("archive header checksum mismatch"));
+        }
+
+        // Parse header
         let header = Header::from_byte_slice(&header);
 
         let file_pos = self.fields.offset;
