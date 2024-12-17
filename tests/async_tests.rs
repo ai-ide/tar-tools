@@ -1,6 +1,6 @@
 use std::io::{self, Cursor};
 use tar::{
-    AsyncArchive, AsyncEntries, AsyncEntry, AsyncEntryReader,
+    AsyncArchive, AsyncEntries, AsyncEntry, AsyncEntryReader, AsyncArchiveReader, AsyncEntryTrait,
     Header, EntryType,
 };
 
@@ -30,12 +30,11 @@ async fn test_async_archive_read_single_file() {
     let mut archive = AsyncArchiveReader::new(cursor);
     let mut entries = archive.entries().await.unwrap();
 
-    let entry = entries.next().await.unwrap().unwrap();
+    let mut entry = entries.next().await.unwrap().unwrap();
     assert_eq!(entry.header().path().unwrap().to_str().unwrap(), "test.txt");
     assert_eq!(entry.header().size().unwrap(), 4);
 
-    let mut contents = Vec::new();
-    entry.read_all().await.unwrap();
+    let contents = entry.read_all().await.unwrap();
     assert_eq!(&contents, b"test");
 
     assert!(entries.next().await.unwrap().is_none());

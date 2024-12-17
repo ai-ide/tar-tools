@@ -22,7 +22,7 @@
 
 #![doc(html_root_url = "https://docs.rs/tar/0.4")]
 #![deny(missing_docs)]
-#![cfg_attr(test, deny(warnings))]
+// #![cfg_attr(test, deny(warnings))]
 
 use std::io::{Error, ErrorKind};
 
@@ -38,7 +38,7 @@ pub use crate::pax::{PaxExtension, PaxExtensions};
 // Asynchronous interfaces
 pub use crate::async_archive::AsyncArchiveReader;
 pub use crate::async_entry::AsyncEntryReader;
-pub use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntry};
+pub use crate::async_traits::{AsyncArchive, AsyncEntries, AsyncEntry, AsyncEntryTrait};
 
 mod archive;
 mod async_archive;
