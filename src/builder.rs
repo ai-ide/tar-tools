@@ -1,14 +1,12 @@
+use rayon;
 use std::fs;
-use std::io;
-use std::io::prelude::*;
+use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 use std::str;
+use std::sync::{Arc, Mutex};
 
-use crate::header::BLOCK_SIZE;
-use crate::header::GNU_SPARSE_HEADERS_COUNT;
-use crate::header::{path2bytes, HeaderMode};
-use crate::GnuExtSparseHeader;
-use crate::{other, EntryType, Header};
+use crate::header::{path2bytes, Header, HeaderMode, BLOCK_SIZE, GNU_SPARSE_HEADERS_COUNT};
+use crate::{other, EntryType, GnuExtSparseHeader};
 
 /// A structure for building archives
 ///
@@ -25,6 +23,7 @@ struct BuilderOptions {
     mode: HeaderMode,
     follow: bool,
     sparse: bool,
+    thread: Option<usize>,
 }
 
 impl<W: Write> Builder<W> {
@@ -37,6 +36,7 @@ impl<W: Write> Builder<W> {
                 mode: HeaderMode::Complete,
                 follow: true,
                 sparse: true,
+                thread: None,
             },
             finished: false,
             obj: Some(obj),
@@ -64,6 +64,12 @@ impl<W: Write> Builder<W> {
     /// empty segments are omitted from the archive. Defaults to true.
     pub fn sparse(&mut self, sparse: bool) {
         self.options.sparse = sparse;
+    }
+
+    /// Sets the number of threads to use for parallel operations.
+    /// None means single-threaded operation (default).
+    pub fn threads(&mut self, threads: Option<usize>) {
+        self.options.thread = threads;
     }
 
     /// Gets shared reference to the underlying object.
@@ -703,16 +709,69 @@ fn append_file(
     header.set_cksum();
     dst.write_all(header.as_bytes())?;
 
-    if let Some(sparse_entries) = sparse_entries {
-        append_extended_sparse_headers(dst, &sparse_entries)?;
-        for entry in sparse_entries.entries {
-            file.seek(io::SeekFrom::Start(entry.offset))?;
-            io::copy(&mut file.take(entry.num_bytes), dst)?;
+    if let Some(threads) = options.thread {
+        // Parallel processing for non-sparse files
+        if sparse_entries.is_none() {
+            let file_size = stat.len();
+            let chunk_size = (file_size + threads as u64 - 1) / threads as u64;
+            let chunks: Vec<_> = (0..threads)
+                .map(|i| {
+                    let start = i as u64 * chunk_size;
+                    let end = (start + chunk_size).min(file_size);
+                    (start, end)
+                })
+                .collect();
+
+            // Pre-allocate chunk data vector and wrap in Arc<Mutex>
+            let chunk_data = Arc::new(Mutex::new(vec![Vec::new(); chunks.len()]));
+            let file = Arc::new(Mutex::new(file));
+
+            // Process chunks in parallel using thread pool
+            rayon::scope(|s| {
+                for (i, (start, end)) in chunks.into_iter().enumerate() {
+                    let chunk_data = Arc::clone(&chunk_data);
+                    let file = Arc::clone(&file);
+                    s.spawn(move |_| {
+                        let mut buf = vec![0; (end - start) as usize];
+                        let mut file = file.lock().unwrap();
+                        file.seek(io::SeekFrom::Start(start)).unwrap();
+                        file.read_exact(&mut buf).unwrap();
+                        let mut chunk_data = chunk_data.lock().unwrap();
+                        chunk_data[i] = buf;
+                    });
+                }
+            });
+
+            // Write chunks sequentially
+            let chunk_data = chunk_data.lock().unwrap();
+            for chunk in chunk_data.iter() {
+                dst.write_all(chunk)?;
+            }
+
+            pad_zeroes(dst, file_size)?;
+        } else {
+            // Fall back to sequential for sparse files
+            let sparse_entries = sparse_entries.as_ref().unwrap();
+            append_extended_sparse_headers(dst, sparse_entries)?;
+            for entry in &sparse_entries.entries {
+                file.seek(io::SeekFrom::Start(entry.offset))?;
+                io::copy(&mut file.take(entry.num_bytes), dst)?;
+            }
+            pad_zeroes(dst, sparse_entries.on_disk_size)?;
         }
-        pad_zeroes(dst, sparse_entries.on_disk_size)?;
     } else {
-        let len = io::copy(file, dst)?;
-        pad_zeroes(dst, len)?;
+        // Original sequential implementation
+        if let Some(sparse_entries) = sparse_entries {
+            append_extended_sparse_headers(dst, &sparse_entries)?;
+            for entry in sparse_entries.entries {
+                file.seek(io::SeekFrom::Start(entry.offset))?;
+                io::copy(&mut file.take(entry.num_bytes), dst)?;
+            }
+            pad_zeroes(dst, sparse_entries.on_disk_size)?;
+        } else {
+            let len = io::copy(file, dst)?;
+            pad_zeroes(dst, len)?;
+        }
     }
 
     Ok(())
