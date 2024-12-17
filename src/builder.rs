@@ -1,16 +1,12 @@
+use rayon;
 use std::fs;
-use std::io;
-use std::io::prelude::*;
+use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 use std::str;
 use std::sync::{Arc, Mutex};
-use rayon::prelude::*;
 
-use crate::header::BLOCK_SIZE;
-use crate::header::GNU_SPARSE_HEADERS_COUNT;
-use crate::header::{path2bytes, HeaderMode};
-use crate::GnuExtSparseHeader;
-use crate::{other, EntryType, Header};
+use crate::header::{path2bytes, Header, HeaderMode, BLOCK_SIZE, GNU_SPARSE_HEADERS_COUNT};
+use crate::{other, EntryType, GnuExtSparseHeader};
 
 /// A structure for building archives
 ///
@@ -19,7 +15,7 @@ use crate::{other, EntryType, Header};
 pub struct Builder<W: Write> {
     options: BuilderOptions,
     finished: bool,
-    obj: Option<Arc<Mutex<W>>>,
+    obj: Option<W>,
 }
 
 #[derive(Clone, Copy)]
@@ -43,7 +39,7 @@ impl<W: Write> Builder<W> {
                 thread: None,
             },
             finished: false,
-            obj: Some(Arc::new(Mutex::new(obj))),
+            obj: Some(obj),
         }
     }
 
@@ -78,7 +74,7 @@ impl<W: Write> Builder<W> {
 
     /// Gets shared reference to the underlying object.
     pub fn get_ref(&self) -> &W {
-        &*self.obj.as_ref().unwrap().lock().unwrap()
+        self.obj.as_ref().unwrap()
     }
 
     /// Gets mutable reference to the underlying object.
@@ -88,7 +84,7 @@ impl<W: Write> Builder<W> {
     /// useful in the situations when one needs to be ensured that
     /// tar entry was flushed to the disk.
     pub fn get_mut(&mut self) -> &mut W {
-        &mut *self.obj.as_mut().unwrap().lock().unwrap()
+        self.obj.as_mut().unwrap()
     }
 
     /// Unwrap this archive, returning the underlying object.
@@ -726,23 +722,42 @@ fn append_file(
                 })
                 .collect();
 
-            chunks.into_par_iter().try_for_each(|(start, end)| {
-                let mut buf = vec![0; (end - start) as usize];
-                file.seek(io::SeekFrom::Start(start))?;
-                file.read_exact(&mut buf)?;
-                dst.write_all(&buf)?;
-                Ok::<_, io::Error>(())
-            })?;
+            // Pre-allocate chunk data vector and wrap in Arc<Mutex>
+            let chunk_data = Arc::new(Mutex::new(vec![Vec::new(); chunks.len()]));
+            let file = Arc::new(Mutex::new(file));
+
+            // Process chunks in parallel using thread pool
+            rayon::scope(|s| {
+                for (i, (start, end)) in chunks.into_iter().enumerate() {
+                    let chunk_data = Arc::clone(&chunk_data);
+                    let file = Arc::clone(&file);
+                    s.spawn(move |_| {
+                        let mut buf = vec![0; (end - start) as usize];
+                        let mut file = file.lock().unwrap();
+                        file.seek(io::SeekFrom::Start(start)).unwrap();
+                        file.read_exact(&mut buf).unwrap();
+                        let mut chunk_data = chunk_data.lock().unwrap();
+                        chunk_data[i] = buf;
+                    });
+                }
+            });
+
+            // Write chunks sequentially
+            let chunk_data = chunk_data.lock().unwrap();
+            for chunk in chunk_data.iter() {
+                dst.write_all(chunk)?;
+            }
 
             pad_zeroes(dst, file_size)?;
         } else {
             // Fall back to sequential for sparse files
-            append_extended_sparse_headers(dst, &sparse_entries.unwrap())?;
-            for entry in sparse_entries.unwrap().entries {
+            let sparse_entries = sparse_entries.as_ref().unwrap();
+            append_extended_sparse_headers(dst, sparse_entries)?;
+            for entry in &sparse_entries.entries {
                 file.seek(io::SeekFrom::Start(entry.offset))?;
                 io::copy(&mut file.take(entry.num_bytes), dst)?;
             }
-            pad_zeroes(dst, sparse_entries.unwrap().on_disk_size)?;
+            pad_zeroes(dst, sparse_entries.on_disk_size)?;
         }
     } else {
         // Original sequential implementation
