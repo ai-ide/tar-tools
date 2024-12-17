@@ -22,6 +22,8 @@ contents are never required to be entirely resident in memory all at once.
 filetime = "0.2.8"
 rayon = "1.8"
 clap = { version = "4.4", features = ["derive"] }
+flate2 = "1.0"
+indicatif = "0.17"
 
 [dev-dependencies]
 tempfile = "3"
