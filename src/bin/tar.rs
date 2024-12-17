@@ -9,6 +9,8 @@ use std::fs::File;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    #[arg(short = 'v', long = "verbose", help = "Enable verbose output")]
+    verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -19,6 +21,8 @@ enum Commands {
         input: PathBuf,
         #[arg(short = 'o', help = "Location of archive")]
         output: PathBuf,
+        #[arg(short = 'z', help = "Enable gzip compression")]
+        gzip: bool,
     },
     #[command(short_flag = 'x')]
     Extract {
