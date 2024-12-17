@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser};
 use std::path::PathBuf;
 use tar::{Archive, Builder};
 use std::fs::File;
@@ -12,30 +12,28 @@ use indicatif::{ProgressBar, ProgressStyle};
 #[command(name = "tar")]
 #[command(about = "Archive and extract files using tar format")]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-    #[arg(short = 'v', long = "verbose", help = "Enable verbose output")]
+    /// Enable verbose output
+    #[arg(short = 'v', long = "verbose")]
     verbose: bool,
-}
 
-#[derive(Subcommand)]
-enum Commands {
-    #[command(short_flag = 'c')]
-    Create {
-        #[arg(help = "File or directory to archive")]
-        input: PathBuf,
-        #[arg(short = 'o', help = "Location of archive")]
-        output: PathBuf,
-        #[arg(short = 'z', help = "Enable gzip compression")]
-        gzip: bool,
-    },
-    #[command(short_flag = 'x')]
-    Extract {
-        #[arg(help = "Location of archive")]
-        archive: PathBuf,
-        #[arg(short = 'o', help = "Output directory")]
-        output: PathBuf,
-    },
+    /// Create archive
+    #[arg(short = 'c', group = "mode")]
+    create: bool,
+
+    /// Extract archive
+    #[arg(short = 'x', group = "mode")]
+    extract: bool,
+
+    /// Enable gzip compression
+    #[arg(short = 'z')]
+    gzip: bool,
+
+    /// Output location (file for create, directory for extract)
+    #[arg(short = 'o')]
+    output: PathBuf,
+
+    /// Input (file/directory to archive for create, archive for extract)
+    input: PathBuf,
 }
 
 struct CompressedWriter<W: Write> {
@@ -78,46 +76,54 @@ fn handle_error(err: std::io::Error) -> ! {
 
 fn run() -> std::io::Result<()> {
     let cli = Cli::parse();
-    match cli.command {
-        Commands::Create { input, output, gzip } => {
-            let pb = create_progress_bar("Creating archive");
-            let file = File::create(output)?;
-            let writer: Box<dyn Write> = if gzip {
-                Box::new(CompressedWriter::new(file))
-            } else {
-                Box::new(file)
-            };
-            let mut builder = Builder::new(writer);
-            if input.is_dir() {
-                if cli.verbose {
-                    println!("Adding directory: {}", input.display());
-                }
-                builder.append_dir_all(".", input)?;
-            } else {
-                if cli.verbose {
-                    println!("Adding file: {}", input.display());
-                }
-                builder.append_path(input)?;
-            }
-            builder.finish()?;
-            pb.finish_with_message("Archive created successfully");
-        }
-        Commands::Extract { archive, output } => {
-            let pb = create_progress_bar("Extracting archive");
-            let file = File::open(&archive)?;
-            let reader: Box<dyn Read> = if archive.extension().map_or(false, |ext| ext == "gz") {
-                Box::new(GzDecoder::new(file))
-            } else {
-                Box::new(file)
-            };
-            let mut archive = Archive::new(reader);
+
+    if cli.create {
+        let pb = create_progress_bar("Creating archive");
+        let file = File::create(&cli.output)?;
+        let writer: Box<dyn Write> = if cli.gzip {
             if cli.verbose {
-                println!("Extracting to: {}", output.display());
+                println!("Using gzip compression");
             }
-            archive.unpack(output)?;
-            pb.finish_with_message("Archive extracted successfully");
+            Box::new(CompressedWriter::new(file))
+        } else {
+            Box::new(file)
+        };
+        let mut builder = Builder::new(writer);
+
+        if cli.input.is_dir() {
+            if cli.verbose {
+                println!("Adding directory: {}", cli.input.display());
+            }
+            // Use the directory name itself as the base path
+            let base_name = cli.input.file_name().unwrap_or_default();
+            builder.append_dir_all(base_name, &cli.input)?;
+        } else {
+            if cli.verbose {
+                println!("Adding file: {}", cli.input.display());
+            }
+            builder.append_path(&cli.input)?;
         }
+        builder.finish()?;
+        pb.finish_with_message("Archive created successfully");
+    } else if cli.extract {
+        let pb = create_progress_bar("Extracting archive");
+        let file = File::open(&cli.input)?;
+        let reader: Box<dyn Read> = if cli.input.extension().map_or(false, |ext| ext == "gz") {
+            if cli.verbose {
+                println!("Detected gzip compression");
+            }
+            Box::new(GzDecoder::new(file))
+        } else {
+            Box::new(file)
+        };
+        let mut archive = Archive::new(reader);
+        if cli.verbose {
+            println!("Extracting to: {}", cli.output.display());
+        }
+        archive.unpack(&cli.output)?;
+        pb.finish_with_message("Archive extracted successfully");
     }
+
     Ok(())
 }
 
