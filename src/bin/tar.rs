@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
 use flate2::Compression;
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[derive(Parser)]
 #[command(name = "tar")]
@@ -59,6 +60,17 @@ impl<W: Write> Write for CompressedWriter<W> {
     }
 }
 
+fn create_progress_bar(msg: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} [{elapsed_precise}] {msg}: {pos}")
+            .unwrap()
+    );
+    pb.set_message(msg.to_string());
+    pb
+}
+
 fn handle_error(err: std::io::Error) -> ! {
     eprintln!("Error: {}", err);
     std::process::exit(1);
@@ -68,6 +80,7 @@ fn run() -> std::io::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Create { input, output, gzip } => {
+            let pb = create_progress_bar("Creating archive");
             let file = File::create(output)?;
             let writer: Box<dyn Write> = if gzip {
                 Box::new(CompressedWriter::new(file))
@@ -76,21 +89,33 @@ fn run() -> std::io::Result<()> {
             };
             let mut builder = Builder::new(writer);
             if input.is_dir() {
+                if cli.verbose {
+                    println!("Adding directory: {}", input.display());
+                }
                 builder.append_dir_all(".", input)?;
             } else {
+                if cli.verbose {
+                    println!("Adding file: {}", input.display());
+                }
                 builder.append_path(input)?;
             }
             builder.finish()?;
+            pb.finish_with_message("Archive created successfully");
         }
         Commands::Extract { archive, output } => {
-            let file = File::open(archive)?;
+            let pb = create_progress_bar("Extracting archive");
+            let file = File::open(&archive)?;
             let reader: Box<dyn Read> = if archive.extension().map_or(false, |ext| ext == "gz") {
                 Box::new(GzDecoder::new(file))
             } else {
                 Box::new(file)
             };
             let mut archive = Archive::new(reader);
+            if cli.verbose {
+                println!("Extracting to: {}", output.display());
+            }
             archive.unpack(output)?;
+            pb.finish_with_message("Archive extracted successfully");
         }
     }
     Ok(())
