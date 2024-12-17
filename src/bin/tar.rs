@@ -2,6 +2,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tar::{Archive, Builder};
 use std::fs::File;
+use std::io::{self, Read, Write};
+use flate2::write::GzEncoder;
+use flate2::read::GzDecoder;
+use flate2::Compression;
 
 #[derive(Parser)]
 #[command(name = "tar")]
@@ -33,6 +37,28 @@ enum Commands {
     },
 }
 
+struct CompressedWriter<W: Write> {
+    inner: GzEncoder<W>,
+}
+
+impl<W: Write> CompressedWriter<W> {
+    fn new(writer: W) -> Self {
+        CompressedWriter {
+            inner: GzEncoder::new(writer, Compression::default())
+        }
+    }
+}
+
+impl<W: Write> Write for CompressedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 fn handle_error(err: std::io::Error) -> ! {
     eprintln!("Error: {}", err);
     std::process::exit(1);
@@ -41,9 +67,14 @@ fn handle_error(err: std::io::Error) -> ! {
 fn run() -> std::io::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Create { input, output } => {
+        Commands::Create { input, output, gzip } => {
             let file = File::create(output)?;
-            let mut builder = Builder::new(file);
+            let writer: Box<dyn Write> = if gzip {
+                Box::new(CompressedWriter::new(file))
+            } else {
+                Box::new(file)
+            };
+            let mut builder = Builder::new(writer);
             if input.is_dir() {
                 builder.append_dir_all(".", input)?;
             } else {
@@ -53,7 +84,12 @@ fn run() -> std::io::Result<()> {
         }
         Commands::Extract { archive, output } => {
             let file = File::open(archive)?;
-            let mut archive = Archive::new(file);
+            let reader: Box<dyn Read> = if archive.extension().map_or(false, |ext| ext == "gz") {
+                Box::new(GzDecoder::new(file))
+            } else {
+                Box::new(file)
+            };
+            let mut archive = Archive::new(reader);
             archive.unpack(output)?;
         }
     }
