@@ -3,6 +3,8 @@ use std::io;
 use std::io::prelude::*;
 use std::path::Path;
 use std::str;
+use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
 
 use crate::header::BLOCK_SIZE;
 use crate::header::GNU_SPARSE_HEADERS_COUNT;
@@ -17,7 +19,7 @@ use crate::{other, EntryType, Header};
 pub struct Builder<W: Write> {
     options: BuilderOptions,
     finished: bool,
-    obj: Option<W>,
+    obj: Option<Arc<Mutex<W>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -25,6 +27,7 @@ struct BuilderOptions {
     mode: HeaderMode,
     follow: bool,
     sparse: bool,
+    thread: Option<usize>,
 }
 
 impl<W: Write> Builder<W> {
@@ -37,9 +40,10 @@ impl<W: Write> Builder<W> {
                 mode: HeaderMode::Complete,
                 follow: true,
                 sparse: true,
+                thread: None,
             },
             finished: false,
-            obj: Some(obj),
+            obj: Some(Arc::new(Mutex::new(obj))),
         }
     }
 
@@ -66,9 +70,15 @@ impl<W: Write> Builder<W> {
         self.options.sparse = sparse;
     }
 
+    /// Sets the number of threads to use for parallel operations.
+    /// None means single-threaded operation (default).
+    pub fn threads(&mut self, threads: Option<usize>) {
+        self.options.thread = threads;
+    }
+
     /// Gets shared reference to the underlying object.
     pub fn get_ref(&self) -> &W {
-        self.obj.as_ref().unwrap()
+        &*self.obj.as_ref().unwrap().lock().unwrap()
     }
 
     /// Gets mutable reference to the underlying object.
@@ -78,7 +88,7 @@ impl<W: Write> Builder<W> {
     /// useful in the situations when one needs to be ensured that
     /// tar entry was flushed to the disk.
     pub fn get_mut(&mut self) -> &mut W {
-        self.obj.as_mut().unwrap()
+        &mut *self.obj.as_mut().unwrap().lock().unwrap()
     }
 
     /// Unwrap this archive, returning the underlying object.
@@ -703,16 +713,50 @@ fn append_file(
     header.set_cksum();
     dst.write_all(header.as_bytes())?;
 
-    if let Some(sparse_entries) = sparse_entries {
-        append_extended_sparse_headers(dst, &sparse_entries)?;
-        for entry in sparse_entries.entries {
-            file.seek(io::SeekFrom::Start(entry.offset))?;
-            io::copy(&mut file.take(entry.num_bytes), dst)?;
+    if let Some(threads) = options.thread {
+        // Parallel processing for non-sparse files
+        if sparse_entries.is_none() {
+            let file_size = stat.len();
+            let chunk_size = (file_size + threads as u64 - 1) / threads as u64;
+            let chunks: Vec<_> = (0..threads)
+                .map(|i| {
+                    let start = i as u64 * chunk_size;
+                    let end = (start + chunk_size).min(file_size);
+                    (start, end)
+                })
+                .collect();
+
+            chunks.into_par_iter().try_for_each(|(start, end)| {
+                let mut buf = vec![0; (end - start) as usize];
+                file.seek(io::SeekFrom::Start(start))?;
+                file.read_exact(&mut buf)?;
+                dst.write_all(&buf)?;
+                Ok::<_, io::Error>(())
+            })?;
+
+            pad_zeroes(dst, file_size)?;
+        } else {
+            // Fall back to sequential for sparse files
+            append_extended_sparse_headers(dst, &sparse_entries.unwrap())?;
+            for entry in sparse_entries.unwrap().entries {
+                file.seek(io::SeekFrom::Start(entry.offset))?;
+                io::copy(&mut file.take(entry.num_bytes), dst)?;
+            }
+            pad_zeroes(dst, sparse_entries.unwrap().on_disk_size)?;
         }
-        pad_zeroes(dst, sparse_entries.on_disk_size)?;
     } else {
-        let len = io::copy(file, dst)?;
-        pad_zeroes(dst, len)?;
+        // Original sequential implementation
+        if let Some(sparse_entries) = sparse_entries {
+            append_extended_sparse_headers(dst, &sparse_entries)?;
+            for entry in sparse_entries.entries {
+                file.seek(io::SeekFrom::Start(entry.offset))?;
+                io::copy(&mut file.take(entry.num_bytes), dst)?;
+            }
+            pad_zeroes(dst, sparse_entries.on_disk_size)?;
+        } else {
+            let len = io::copy(file, dst)?;
+            pad_zeroes(dst, len)?;
+        }
     }
 
     Ok(())
